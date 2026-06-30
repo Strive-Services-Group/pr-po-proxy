@@ -5,6 +5,7 @@
   "main": "src/functions/*.js",
   "engines": { "node": ">=20.0.0" },
   "dependencies": {
-    "@azure/functions": "^4.5.0"
+    "@azure/functions": "^4.5.0",
+    "jose": "^5.9.6"
   }
 }

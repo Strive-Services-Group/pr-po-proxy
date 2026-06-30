@@ -1,6 +1,21 @@
 const { app } = require('@azure/functions');
+const { jwtVerify, createRemoteJWKSet } = require('jose');
 const STEP_MAP = require('../../stepMap.json');
 const PO_STEP_MAP = require('../../poStepMap.json');
+
+// ---- Entra token validation: the dashboard sends the signed-in user's token ----
+const TENANT = process.env.TENANT_ID;
+const AUDIENCE = process.env.DASHBOARD_CLIENT_ID; // the dashboard's MSAL client id
+const JWKS = TENANT ? createRemoteJWKSet(new URL(`https://login.microsoftonline.com/${TENANT}/discovery/v2.0/keys`)) : null;
+async function requireUser(request) {
+  const h = (request.headers.get && request.headers.get('authorization')) || '';
+  const m = h.match(/^Bearer\s+(.+)$/i);
+  if (!m) throw new Error('unauthorized: missing token');
+  await jwtVerify(m[1], JWKS, {
+    issuer: `https://login.microsoftonline.com/${TENANT}/v2.0`,
+    audience: AUDIENCE
+  });
+}
 
 // ---- simple in-memory cache (per warm instance) ----
 const CACHE_MS = 3 * 60 * 1000;
@@ -78,6 +93,12 @@ async function buildPR() {
   const lines = await odataAll(token,
     "PurchaseRequisitionLines?$select=RequisitionNumber,LineAmount,DefaultLedgerDimensionDisplayValue");
 
+  // real Created / Submitted dates (header entity doesn't expose them cleanly)
+  const bi = await odataAll(token,
+    "PurchReqTableBiEntities?$select=PurchReqId,TransDate,SubmittedDateTime");
+  const biMap = {};
+  for (const b of bi) { if (b.PurchReqId) biMap[b.PurchReqId] = b; }
+
   const lineAgg = {};
   for (const l of lines) {
     const k = l.RequisitionNumber;
@@ -112,8 +133,8 @@ async function buildPR() {
       preparer: h.PreparerPersonnelNumber || null,
       projectId: h.DefaultProjectId || null,
       status: h.RequisitionStatus || null,
-      createdDate: h.DefaultRequestedDate || null,
-      submittedDate: null,
+      createdDate: (biMap[k] && biMap[k].TransDate) || h.DefaultRequestedDate || null,
+      submittedDate: (biMap[k] && biMap[k].SubmittedDateTime) || null,
       acceptedByAssignTo: null,
       department: dim.department,
       location: dim.location,
@@ -201,6 +222,12 @@ async function serve(kind, request, context) {
   if (request.method === 'OPTIONS') return { status: 204, headers };
 
   try {
+    await requireUser(request);
+  } catch (e) {
+    return { status: 401, headers, jsonBody: { error: 'unauthorized' } };
+  }
+
+  try {
     const now = Date.now();
     if (cache[kind] && now - cache[kind].at < CACHE_MS) {
       return { status: 200, headers, jsonBody: { ...cache[kind].data, cached: true } };
@@ -214,5 +241,5 @@ async function serve(kind, request, context) {
   }
 }
 
-app.http('pr', { methods: ['GET', 'OPTIONS'], authLevel: 'function', route: 'pr', handler: (req, ctx) => serve('pr', req, ctx) });
-app.http('po', { methods: ['GET', 'OPTIONS'], authLevel: 'function', route: 'po', handler: (req, ctx) => serve('po', req, ctx) });
+app.http('pr', { methods: ['GET', 'OPTIONS'], authLevel: 'anonymous', route: 'pr', handler: (req, ctx) => serve('pr', req, ctx) });
+app.http('po', { methods: ['GET', 'OPTIONS'], authLevel: 'anonymous', route: 'po', handler: (req, ctx) => serve('po', req, ctx) });
