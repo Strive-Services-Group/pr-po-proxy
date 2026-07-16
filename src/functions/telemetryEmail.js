@@ -336,7 +336,7 @@ function buildEmail(vmsRecords, scRows) {
     let bg = '#fde8e8', fg = '#c81e1e';
     if (pn >= 50) { bg = '#def7ec'; fg = '#03543f'; }
     else if (pn >= 20) { bg = '#fdf6b2'; fg = '#723b13'; }
-    return '<span style="display:inline-block;padding:2px 9px;border-radius:10px;background:' + bg + ';color:' + fg + ';font-weight:700;font-size:11px;">' + pn + '%</span>';
+    return '<span style="display:inline-block;padding:3px 10px;border-radius:5px;background:' + bg + ';color:' + fg + ';font-weight:700;font-size:11px;">' + pn + '%</span>';
   }
 
   let body = '';
@@ -385,7 +385,7 @@ function buildEmail(vmsRecords, scRows) {
   const html =
     '<div style="font-family:' + FONT + ';color:#22303c;">' +
     '<div style="font-family:' + FONT + ';font-weight:700;font-size:16px;color:#145A95;border-left:4px solid #618FB4;padding-left:10px;margin:0 0 4px;">VISITOR TELEMETRY (FLAGSHIP PROJECTS) - LAST 3 DAYS</div>' +
-    '<div style="font-family:' + FONT + ';font-size:11px;color:#607083;margin:0 0 10px;">S &amp; C = our visits &#183; Other = competitor &#183; snapshot taken ' + stamp + ' (Dubai) &#183; <a href="' + DASHBOARD_URL + '" style="color:#145A95;font-weight:700;text-decoration:none;">open the live dashboard</a> for drill-through</div>' +
+    '<div style="font-family:' + FONT + ';font-size:13px;color:#607083;margin:0 0 10px;">S &amp; C = our visits &#183; Other = competitor &#183; snapshot taken ' + stamp + ' (Dubai) &#183; <a href="' + DASHBOARD_URL + '" style="color:#145A95;font-weight:700;text-decoration:none;">Open the Live Dashboard</a> for more details and drill-through</div>' +
     '<div style="border:1px solid #dbe3ec;border-radius:12px;overflow:hidden;display:inline-block;">' +
     '<table cellpadding="0" cellspacing="0" border="0" width="' + TOTAL_W + '" style="border-collapse:collapse;table-layout:fixed;width:' + TOTAL_W + 'px;background:#ffffff;">' + head + body + '</table>' +
     '</div>' +
