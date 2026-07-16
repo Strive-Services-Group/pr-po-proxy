@@ -93,9 +93,18 @@ function colIdx(headers, ...names) {
 }
 
 /* ---- clean one workbook (same logic/order as clean_vms.clean_source) ---- */
-function cleanSource(proj, buf, sheetNames, dedupe, log) {
+// sheet-name matching is normalized (curly vs straight apostrophe, case, spaces)
+function normSheetName(s) { return String(s == null ? '' : s).replace(/[‘’]/g, "'").trim().toLowerCase(); }
+function cleanSource(proj, buf, sheetNames, dedupe, log, info) {
   const wb = XLSX.read(buf, { type: 'buffer', cellDates: false });
-  const sns = sheetNames || wb.SheetNames;
+  let sns;
+  if (sheetNames) {
+    const wanted = sheetNames.map(normSheetName);
+    sns = wb.SheetNames.filter(n => wanted.indexOf(normSheetName(n)) >= 0);
+  } else {
+    sns = wb.SheetNames;
+  }
+  if (info) { info.sheets = wb.SheetNames.slice(); info.matchedSheets = sns.slice(); info.bytes = buf.length; }
   const out = []; const seen = new Set(); let dropped = 0;
   for (const sn of sns) {
     if (wb.SheetNames.indexOf(sn) < 0) continue;
@@ -160,12 +169,18 @@ async function refreshVms(getToken, vmsUrlFallback, context) {
   const token = await getToken('https://graph.microsoft.com');
   let rows = [];
   const missing = [];
+  const perSource = {}; // diagnostics per source file (visible in ?refresh=1&dryrun=1)
   for (const [proj, driveId, path, sheets, dedupe] of sources()) {
     try {
       const buf = await graphDownload(driveId, path, token);
-      rows = rows.concat(cleanSource(proj, buf, sheets, dedupe, log));
+      const info = {};
+      const cleaned = cleanSource(proj, buf, sheets, dedupe, log, info);
+      let maxD = ''; cleaned.forEach(r => { if (r[7] > maxD) maxD = r[7]; });
+      perSource[proj] = { rows: cleaned.length, newestDate: maxD, bytes: info.bytes, sheets: info.sheets, matchedSheets: info.matchedSheets };
+      rows = rows.concat(cleaned);
     } catch (e) {
       log('  !! MISSING ' + proj + ': ' + e.message);
+      perSource[proj] = { error: e.message.slice(0, 200) };
       missing.push(proj);
     }
   }
@@ -177,6 +192,7 @@ async function refreshVms(getToken, vmsUrlFallback, context) {
       if (pr.ok) {
         const cf = prevRows(Buffer.from(await pr.arrayBuffer()), 'SOUTH RESIDENCE');
         log('  SOUTH RESIDENCE: ' + cf.length + ' rows (carried forward from previous publish)');
+        perSource['SOUTH RESIDENCE'] = Object.assign(perSource['SOUTH RESIDENCE'] || {}, { carriedForward: cf.length });
         rows = rows.concat(cf);
       }
     } catch (e) { log('  carry-forward failed: ' + e.message); }
@@ -211,7 +227,7 @@ async function refreshVms(getToken, vmsUrlFallback, context) {
   const counts = {};
   records.forEach(r => { counts[r.project] = (counts[r.project] || 0) + 1; });
   log('VMS refresh: ' + rows.length + ' rows total', JSON.stringify(counts));
-  return { records, xlsxBuffer, counts, missing, total: rows.length };
+  return { records, xlsxBuffer, counts, missing, total: rows.length, perSource };
 }
 
 /* ---- commit visitor.xlsx to the dashboard repo (GitHub contents API) ---- */

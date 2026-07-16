@@ -477,7 +477,7 @@ app.http('telemetry-email', {
         const rf = await refreshVms(getToken, VMS_URL, context);
         let committed = false;
         if (url.searchParams.get('dryrun') !== '1') committed = await commitVisitorXlsx(rf.xlsxBuffer, context);
-        return { status: 200, jsonBody: { total: rf.total, counts: rf.counts, missing: rf.missing, committed } };
+        return { status: 200, jsonBody: { total: rf.total, counts: rf.counts, missing: rf.missing, committed, sources: rf.perSource } };
       }
       const doSend = url.searchParams.get('send') === '1';
       const out = await runReport(context, doSend);
