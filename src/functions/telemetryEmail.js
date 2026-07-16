@@ -295,47 +295,79 @@ function buildEmail(vmsRecords, scRows) {
     return out;
   }
 
-  /* ----- email-safe HTML (inline styles only; tables all the way for Outlook) ----- */
-  const NAVY = '#145A95', SLATE = '#1F466B', STEEL = '#618FB4';
-  const border = '1px solid #d7e1ea';
-  const thG = 'padding:7px 10px;background:' + NAVY + ';color:#ffffff;font:700 12px Aptos,Segoe UI,Arial,sans-serif;border:' + border + ';text-align:center;';
-  const thS = 'padding:5px 8px;background:' + SLATE + ';color:#dbe7f3;font:700 10px Aptos,Segoe UI,Arial,sans-serif;border:' + border + ';text-align:center;';
-  const tdBase = 'padding:6px 8px;border:' + border + ';font:600 12px Aptos,Segoe UI,Arial,sans-serif;text-align:center;color:#22303c;';
+  /* ----- email-safe HTML — colour-grouped, FIXED-WIDTH layout (does not shrink) ----- */
+  const FONT = 'Aptos,Segoe UI,Arial,sans-serif';
+  const NAVYD = '#14315E';                                   // dark navy (labels + first 3 header cols)
+  const GRP = {                                              // [group header colour, sub-header colour]
+    ALL: ['#1D4ED8', '#14315E'],
+    LAUNDRY: ['#6D28D9', '#4C1D95'],
+    HOUSEKEEP: ['#16A34A', '#166534'],
+    MAINT: ['#EA580C', '#9A3412'],
+    FITOUT: ['#0891B2', '#0E7490']
+  };
+  const TICON = { ALL: '&#128101;', LAUNDRY: '&#129530;', HOUSEKEEP: '&#129529;', MAINT: '&#128736;&#65039;', FITOUT: '&#127959;&#65039;' }; // 👥 🧺 🧹 🛠️ 🏗️
+  // fixed column widths (px) — table-layout:fixed keeps them constant on any screen
+  const W_PROJ = 150, W_UNITS = 80, W_DATE = 105, W_SC = 52, W_OT = 104, W_PCT = 72;
+  const TOTAL_W = W_PROJ + W_UNITS + W_DATE + 5 * (W_SC + W_OT + W_PCT);
+
+  const thBase = 'color:#ffffff;font-family:' + FONT + ';font-weight:700;font-size:12.5px;padding:9px 8px;text-align:center;white-space:nowrap;border:0;border-right:1px solid rgba(255,255,255,.25);';
+  const thSub = 'color:#ffffff;font-family:' + FONT + ';font-weight:700;font-size:10.5px;padding:6px 4px;text-align:center;white-space:nowrap;border:0;border-right:1px solid rgba(255,255,255,.25);';
 
   const groups = [['ALL', 'All Visitors']].concat(TELE_SVCS.map(s => [s, TELE_LBL[s]]));
-  let head = '<tr><th rowspan="2" style="' + thG + 'text-align:left;">Project</th><th rowspan="2" style="' + thG + '">Total Units</th><th rowspan="2" style="' + thG + '">Date</th>';
-  groups.forEach(g => { head += '<th colspan="3" style="' + thG + '">' + escHtml(g[1]) + '</th>'; });
+  let head = '<tr>'
+    + '<th rowspan="2" width="' + W_PROJ + '" style="' + thBase + 'background:' + NAVYD + ';">&#127970; Project</th>'
+    + '<th rowspan="2" width="' + W_UNITS + '" style="' + thBase + 'background:' + NAVYD + ';">&#128230; Total Units</th>'
+    + '<th rowspan="2" width="' + W_DATE + '" style="' + thBase + 'background:' + NAVYD + ';">&#128197; Date</th>';
+  groups.forEach(g => {
+    head += '<th colspan="3" width="' + (W_SC + W_OT + W_PCT) + '" style="' + thBase + 'background:' + GRP[g[0]][0] + ';">' + (TICON[g[0]] || '') + ' ' + escHtml(g[1]) + '</th>';
+  });
   head += '</tr><tr>';
-  groups.forEach(() => { head += '<th style="' + thS + '">S &amp; C</th><th style="' + thS + '">Other</th><th style="' + thS + '">Share %</th>'; });
+  groups.forEach(g => {
+    const sub = GRP[g[0]][1];
+    head += '<th width="' + W_SC + '" style="' + thSub + 'background:' + sub + ';">S&nbsp;&amp;&nbsp;C</th>'
+      + '<th width="' + W_OT + '" style="' + thSub + 'background:' + sub + ';">Other</th>'
+      + '<th width="' + W_PCT + '" style="' + thSub + 'background:' + sub + ';">Share&nbsp;%</th>';
+  });
   head += '</tr>';
+
+  // Share % pill (like the mock-up): red < 20 <= amber < 50 <= green
+  function pill(pn) {
+    if (pn == null) return '<span style="color:#9aa7b5;">-</span>';
+    let bg = '#fde8e8', fg = '#c81e1e';
+    if (pn >= 50) { bg = '#def7ec'; fg = '#03543f'; }
+    else if (pn >= 20) { bg = '#fdf6b2'; fg = '#723b13'; }
+    return '<span style="display:inline-block;padding:2px 9px;border-radius:10px;background:' + bg + ';color:' + fg + ';font-weight:700;font-size:11px;">' + pn + '%</span>';
+  }
 
   let body = '';
   TELE_PROJECTS.forEach((p, pi) => {
     const apts = PROJ_UNITS[p] || 0;
-    const rowBg = pi % 2 ? '#f4f8fb' : '#ffffff';
+    const blockBg = pi % 2 ? '#f7f9fc' : '#ffffff'; // alternate project blocks
+    const tdD = 'padding:8px 6px;border-bottom:1px solid #e5e9f0;border-right:1px solid #edf1f6;font-family:' + FONT + ';font-size:12px;text-align:center;white-space:nowrap;vertical-align:middle;background:' + blockBg + ';';
     dates.forEach((dt, di) => {
       const u = urmFor(dt, p), o = (comp[dt] || {})[p] || {};
       let uAll = 0, oAll = 0, kk; for (kk in u) uAll += u[kk]; for (kk in o) oAll += o[kk];
       const noVms = !(vmsSeen[dt] && vmsSeen[dt][p]);
-      body += '<tr style="background:' + rowBg + ';">';
+      const grpTop = di === 0 ? 'border-top:2px solid #d6dee8;' : '';
+      body += '<tr>';
       if (di === 0) {
-        body += '<td rowspan="' + dates.length + '" style="' + tdBase + 'text-align:left;font-weight:700;color:' + SLATE + ';">' + escHtml(TELE_PROJ_LBL[p] || p) + '</td>';
-        body += '<td rowspan="' + dates.length + '" style="' + tdBase + '">' + apts.toLocaleString() + '</td>';
+        body += '<td rowspan="' + dates.length + '" style="' + tdD + grpTop + 'font-weight:800;color:' + NAVYD + ';font-size:13.5px;text-align:left;padding-left:10px;">&#127970; ' + escHtml(TELE_PROJ_LBL[p] || p) + '</td>';
+        body += '<td rowspan="' + dates.length + '" style="' + tdD + grpTop + 'font-weight:800;color:#1D4ED8;font-size:15px;">' + apts.toLocaleString() + '</td>';
       }
-      body += '<td style="' + tdBase + 'color:' + STEEL + ';white-space:nowrap;">' + escHtml(teleFmtDate(dt)) + '</td>';
+      body += '<td style="' + tdD + grpTop + 'font-weight:700;color:#2563EB;">' + escHtml(teleFmtDate(dt)) + ' &rsaquo;</td>';
       function cell(uv, ov) {
-        const ud = uv ? '<span style="color:' + NAVY + ';font-weight:700;">' + uv + '</span>' : '<span style="color:#b6c2cd;">0</span>';
+        const ud = uv ? '<span style="color:#1f2937;font-weight:700;">' + uv + '</span>' : '<span style="color:#9aa7b5;">0</span>';
         if (noVms) {
-          return '<td style="' + tdBase + '">' + ud + '</td>' +
-            '<td style="' + tdBase + 'color:#c47f17;font-style:italic;font-size:10px;white-space:nowrap;">&#9888;&#65039; Not updated</td>' +
-            '<td style="' + tdBase + 'color:#8b98a5;">-</td>';
+          return '<td style="' + tdD + grpTop + '">' + ud + '</td>' +
+            '<td style="' + tdD + grpTop + 'font-size:10px;"><span style="color:#c2410c;">&#9888;&#65039;</span> <i style="color:#92703f;font-weight:600;">Not updated</i></td>' +
+            '<td style="' + tdD + grpTop + 'color:#9aa7b5;">-</td>';
         }
         const has = (uv + ov) > 0;
         const pn = has ? Math.round(uv / (uv + ov) * 100) : null;
-        const pct = has ? pn + '%' : '-';
-        const heat = has ? 'background:' + teleHeat(pn) + ';' : '';
-        const od = ov ? '<span style="color:#22303c;font-weight:700;">' + ov + '</span>' : '<span style="color:#b6c2cd;">0</span>';
-        return '<td style="' + tdBase + '">' + ud + '</td><td style="' + tdBase + '">' + od + '</td><td style="' + tdBase + heat + '">' + pct + '</td>';
+        const od = ov ? '<span style="color:#1f2937;font-weight:700;">' + ov + '</span>' : '<span style="color:#9aa7b5;">0</span>';
+        return '<td style="' + tdD + grpTop + '">' + ud + '</td>'
+          + '<td style="' + tdD + grpTop + '">' + od + '</td>'
+          + '<td style="' + tdD + grpTop + '">' + pill(pn) + '</td>';
       }
       body += cell(uAll, oAll);
       TELE_SVCS.forEach(s => { body += cell(u[s] || 0, o[s] || 0); });
@@ -349,11 +381,11 @@ function buildEmail(vmsRecords, scRows) {
   const subject = 'Visitor Telemetry — Last 3 Days (' + teleFmtDate(dates[0]) + ' – ' + teleFmtDate(latest) + ') · 9 AM snapshot';
 
   const html =
-    '<div style="font-family:Aptos,Segoe UI,Arial,sans-serif;color:#22303c;">' +
-    '<div style="font:700 16px Aptos,Segoe UI,Arial,sans-serif;color:' + NAVY + ';border-left:4px solid ' + STEEL + ';padding-left:10px;margin:0 0 4px;">VISITOR TELEMETRY — LAST 3 DAYS</div>' +
-    '<div style="font-size:11px;color:#607083;margin:0 0 10px;">S &amp; C = our visits · Other = competitor · snapshot taken ' + stamp + ' (Dubai) · <a href="' + DASHBOARD_URL + '" style="color:' + NAVY + ';">open the live dashboard</a> for drill-through</div>' +
-    '<table cellpadding="0" cellspacing="0" style="border-collapse:collapse;border:' + border + ';">' + head + body + '</table>' +
-    '<div style="font-size:10px;color:#8b98a5;margin-top:8px;">Automated daily 9:00 AM report · Strive Services Group · data: Candoo bookings &amp; work orders (Dynamics 365) + building visitor logs</div>' +
+    '<div style="font-family:' + FONT + ';color:#22303c;">' +
+    '<div style="font-family:' + FONT + ';font-weight:700;font-size:16px;color:#145A95;border-left:4px solid #618FB4;padding-left:10px;margin:0 0 4px;">VISITOR TELEMETRY — LAST 3 DAYS</div>' +
+    '<div style="font-family:' + FONT + ';font-size:11px;color:#607083;margin:0 0 10px;">S &amp; C = our visits · Other = competitor · snapshot taken ' + stamp + ' (Dubai) · <a href="' + DASHBOARD_URL + '" style="color:#145A95;font-weight:700;text-decoration:none;">open the live dashboard</a> for drill-through</div>' +
+    '<table cellpadding="0" cellspacing="0" border="0" width="' + TOTAL_W + '" style="border-collapse:collapse;table-layout:fixed;width:' + TOTAL_W + 'px;border:1px solid #dbe3ec;background:#ffffff;">' + head + body + '</table>' +
+    '<div style="font-family:' + FONT + ';font-size:10px;color:#8b98a5;margin-top:8px;">Automated daily 9:00 AM report · Strive Services Group · data: Candoo bookings &amp; work orders (Dynamics 365) + building visitor logs</div>' +
     '</div>';
 
   return { subject, html, dates };
