@@ -29,14 +29,18 @@ const XLSX = require('xlsx');
 const BALQIS_DRIVE = process.env.VMS_BALQIS_DRIVE || 'b!5ma3QhDyZ0GZsiXhkdXOuhs9QX6ol9RInUHGE6t7AIyt1DCpPIAcS6cBimNKf0JF';
 const MUQEET_DRIVE = process.env.VMS_MUQEET_DRIVE || 'b!2jsyR69LVE63449EoxnFAaA1OVzt3PxKqmAZ7NtQgKH9TivpAV8ORZN5aAEIpdJm';
 
-// [project default, driveId, path in drive, sheet names (null = all), dedupe]
+// [project default, driveId, path in drive, sheet names (null = all), dedupe, forceProject]
+// forceProject=true: single-project files — ALWAYS use our project name, ignore the file's
+// "Project Name" column (Abdul's restructured SOUTH file carried "NORTH RESIDENCE" in that
+// column, which mislabelled all South visits as North). AL HASEER / AL NABAT keep the column
+// because it maps them to SHORELINE 7AND8; Balqis keeps it as before.
 const DEFAULT_SOURCES = [
-  ['BALQIS RESIDENCE', BALQIS_DRIVE, '/Desktop/Pool and beach Records/DAILY CONTRACTORS RECORDS/Visitors Details Balqis Residence.xlsx', null, false],
-  ['THE8', MUQEET_DRIVE, '/VMS-DATA FILES/VMS-TH8.xlsx', ["VMS-TH8-'26"], true],
-  ['AL HASEER', MUQEET_DRIVE, '/VMS-DATA FILES/VMS-AL HASEER.xlsx', ["VMS-AL HASEER-'26"], true],
-  ['AL NABAT', MUQEET_DRIVE, '/VMS-DATA FILES/VMS-AL NABAT.xlsx', ["VMS-AL NABAT-'26"], true],
-  ['NORTH RESIDENCE', MUQEET_DRIVE, '/VMS-DATA FILES/VMS-NORTH RESIDENCE.xlsx', ["VMS-NORTH RESIDENCE-'26"], true],
-  ['SOUTH RESIDENCE', MUQEET_DRIVE, '/VMS-DATA FILES/VMS-SOUTH RESIDENCE.xlsx', ["VMS-SOUTH RESIDENCE-'26"], true]
+  ['BALQIS RESIDENCE', BALQIS_DRIVE, '/Desktop/Pool and beach Records/DAILY CONTRACTORS RECORDS/Visitors Details Balqis Residence.xlsx', null, false, false],
+  ['THE8', MUQEET_DRIVE, '/VMS-DATA FILES/VMS-TH8.xlsx', ["VMS-TH8-'26"], true, true],
+  ['AL HASEER', MUQEET_DRIVE, '/VMS-DATA FILES/VMS-AL HASEER.xlsx', ["VMS-AL HASEER-'26"], true, false],
+  ['AL NABAT', MUQEET_DRIVE, '/VMS-DATA FILES/VMS-AL NABAT.xlsx', ["VMS-AL NABAT-'26"], true, false],
+  ['NORTH RESIDENCE', MUQEET_DRIVE, '/VMS-DATA FILES/VMS-NORTH RESIDENCE.xlsx', ["VMS-NORTH RESIDENCE-'26"], true, true],
+  ['SOUTH RESIDENCE', MUQEET_DRIVE, '/VMS-DATA FILES/VMS-SOUTH RESIDENCE.xlsx', ["VMS-SOUTH RESIDENCE-'26"], true, true]
 ];
 function sources() {
   try { if (process.env.VMS_SOURCES) return JSON.parse(process.env.VMS_SOURCES); } catch (e) {}
@@ -95,7 +99,7 @@ function colIdx(headers, ...names) {
 /* ---- clean one workbook (same logic/order as clean_vms.clean_source) ---- */
 // sheet-name matching is normalized (curly vs straight apostrophe, case, spaces)
 function normSheetName(s) { return String(s == null ? '' : s).replace(/[‘’]/g, "'").trim().toLowerCase(); }
-function cleanSource(proj, buf, sheetNames, dedupe, log, info) {
+function cleanSource(proj, buf, sheetNames, dedupe, log, info, forceProject) {
   const wb = XLSX.read(buf, { type: 'buffer', cellDates: false });
   let sns;
   if (sheetNames) {
@@ -131,7 +135,7 @@ function cleanSource(proj, buf, sheetNames, dedupe, log, info) {
       const pur = String(row[iP]).trim(); comp = comp.toUpperCase();
       const scope = (iS >= 0 && row[iS] != null) ? String(row[iS]).trim() : '';
       const bu = (iBU >= 0 && row[iBU] != null) ? String(row[iBU]).trim() : '';
-      const pn = (iPN >= 0 && row[iPN] != null && String(row[iPN]).trim()) ? String(row[iPN]).trim() : proj;
+      const pn = forceProject ? proj : ((iPN >= 0 && row[iPN] != null && String(row[iPN]).trim()) ? String(row[iPN]).trim() : proj);
       const unit = (iU >= 0 && row[iU] != null) ? String(row[iU]).trim() : '';
       if (dedupe) {
         const key = date.ymd + '|' + norm(pur) + '|' + unit.toUpperCase() + '|' + comp;
@@ -145,14 +149,14 @@ function cleanSource(proj, buf, sheetNames, dedupe, log, info) {
   return out;
 }
 
-/* ---- previous published visitor.xlsx -> rows (for SOUTH carry-forward) ---- */
-function prevRows(buf, project) {
+/* ---- previous published visitor.xlsx -> ALL rows (for the history merge) ---- */
+function prevRowsAll(buf) {
   const wb = XLSX.read(buf, { type: 'buffer', cellDates: false });
   const ws = wb.Sheets['FINAL'] || wb.Sheets[wb.SheetNames[0]];
   const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null });
   const out = [];
   for (let i = 1; i < aoa.length; i++) {
-    const r = aoa[i]; if (!r || r[6] !== project) continue;
+    const r = aoa[i]; if (!r) continue;
     const date = parseDateCell(r[0]); if (!date) continue;
     out.push([date.serial, r[1] || 'Unit Visit', String(r[2] || ''), String(r[3] || ''), String(r[4] || ''), String(r[5] || ''), String(r[6] || ''), date.ymd]);
   }
@@ -170,11 +174,11 @@ async function refreshVms(getToken, vmsUrlFallback, context) {
   let rows = [];
   const missing = [];
   const perSource = {}; // diagnostics per source file (visible in ?refresh=1&dryrun=1)
-  for (const [proj, driveId, path, sheets, dedupe] of sources()) {
+  for (const [proj, driveId, path, sheets, dedupe, forceProject] of sources()) {
     try {
       const buf = await graphDownload(driveId, path, token);
       const info = {};
-      const cleaned = cleanSource(proj, buf, sheets, dedupe, log, info);
+      const cleaned = cleanSource(proj, buf, sheets, dedupe, log, info, forceProject);
       let maxD = ''; cleaned.forEach(r => { if (r[7] > maxD) maxD = r[7]; });
       perSource[proj] = { rows: cleaned.length, newestDate: maxD, bytes: info.bytes, sheets: info.sheets, matchedSheets: info.matchedSheets };
       rows = rows.concat(cleaned);
@@ -184,19 +188,28 @@ async function refreshVms(getToken, vmsUrlFallback, context) {
       missing.push(proj);
     }
   }
-  // carry forward SOUTH RESIDENCE from the previous publish if absent (same as clean_vms.py)
-  const present = new Set(rows.map(r => r[6]));
-  if (!present.has('SOUTH RESIDENCE')) {
-    try {
-      const pr = await fetch(vmsUrlFallback + '?t=' + Date.now());
-      if (pr.ok) {
-        const cf = prevRows(Buffer.from(await pr.arrayBuffer()), 'SOUTH RESIDENCE');
-        log('  SOUTH RESIDENCE: ' + cf.length + ' rows (carried forward from previous publish)');
-        perSource['SOUTH RESIDENCE'] = Object.assign(perSource['SOUTH RESIDENCE'] || {}, { carriedForward: cf.length });
-        rows = rows.concat(cf);
+  // HISTORY MERGE (generalises the old SOUTH-only carry-forward): the building teams
+  // periodically move old rows out of the working sheets (into DUPLICATES), which would
+  // silently erase history from visitor.xlsx. For every project, keep rows from the
+  // previous publish that are OLDER than the project's new data window; a project whose
+  // source is missing/empty keeps ALL its previous rows.
+  try {
+    const pr = await fetch(vmsUrlFallback + '?t=' + Date.now());
+    if (pr.ok) {
+      const prevAll = prevRowsAll(Buffer.from(await pr.arrayBuffer()));
+      const minNew = {};
+      rows.forEach(r => { const p = String(r[6] || '').trim().toUpperCase(); if (!minNew[p] || r[7] < minNew[p]) minNew[p] = r[7]; });
+      const mergedBy = {};
+      prevAll.forEach(r => {
+        const p = String(r[6] || '').trim().toUpperCase();
+        if (!minNew[p] || r[7] < minNew[p]) { rows.push(r); mergedBy[p] = (mergedBy[p] || 0) + 1; }
+      });
+      if (Object.keys(mergedBy).length) {
+        log('  history merged from previous publish: ' + JSON.stringify(mergedBy));
+        Object.keys(mergedBy).forEach(p => { perSource[p + ' (history)'] = { rows: mergedBy[p] }; });
       }
-    } catch (e) { log('  carry-forward failed: ' + e.message); }
-  }
+    }
+  } catch (e) { log('  history merge failed: ' + e.message); }
   if (!rows.length) throw new Error('VMS refresh produced 0 rows — keeping previous file');
 
   // build visitor.xlsx (sheet FINAL, same header). Dates are raw Excel serials with a
@@ -251,4 +264,4 @@ async function commitVisitorXlsx(xlsxBuffer, context) {
   return true;
 }
 
-module.exports = { refreshVms, commitVisitorXlsx, cleanSource, parseDateCell, prevRows };
+module.exports = { refreshVms, commitVisitorXlsx, cleanSource, parseDateCell, prevRowsAll };
