@@ -331,13 +331,17 @@ function buildEmail(vmsRecords, scRows) {
   });
   head += '</tr>';
 
-  // Share % pill (like the mock-up): red < 20 <= amber < 50 <= green
+  // Share % pill (like the mock-up): red < 20 <= amber < 50 <= green.
+  // Built as a tiny 1-cell table: Outlook's Word engine ignores padding on <span>,
+  // which made the colour chip look tiny — but it respects padding on table cells.
   function pill(pn) {
     if (pn == null) return '<span style="color:#9aa7b5;">-</span>';
     let bg = '#fde8e8', fg = '#c81e1e';
     if (pn >= 50) { bg = '#def7ec'; fg = '#03543f'; }
     else if (pn >= 20) { bg = '#fdf6b2'; fg = '#723b13'; }
-    return '<span style="display:inline-block;padding:4px 12px;border-radius:5px;background:' + bg + ';color:' + fg + ';font-weight:700;font-size:12px;">' + pn + '%</span>';
+    return '<table cellpadding="0" cellspacing="0" border="0" align="center" style="border-collapse:separate;margin:0 auto;"><tr>'
+      + '<td bgcolor="' + bg + '" style="background:' + bg + ';border-radius:5px;padding:3px 12px;color:' + fg + ';font-weight:700;font-size:12px;font-family:' + FONT + ';text-align:center;white-space:nowrap;">' + pn + '%</td>'
+      + '</tr></table>';
   }
 
   let body = '';
