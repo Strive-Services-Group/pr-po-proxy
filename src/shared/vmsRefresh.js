@@ -40,7 +40,8 @@ const DEFAULT_SOURCES = [
   ['AL HASEER', MUQEET_DRIVE, '/VMS-DATA FILES/VMS-AL HASEER.xlsx', ["VMS-AL HASEER-'26"], true, false],
   ['AL NABAT', MUQEET_DRIVE, '/VMS-DATA FILES/VMS-AL NABAT.xlsx', ["VMS-AL NABAT-'26"], true, false],
   ['NORTH RESIDENCE', MUQEET_DRIVE, '/VMS-DATA FILES/VMS-NORTH RESIDENCE.xlsx', ["VMS-NORTH RESIDENCE-'26"], true, true],
-  ['SOUTH RESIDENCE', MUQEET_DRIVE, '/VMS-DATA FILES/VMS-SOUTH RESIDENCE.xlsx', ["VMS-SOUTH RESIDENCE-'26"], true, true]
+  ['SOUTH RESIDENCE', MUQEET_DRIVE, '/VMS-DATA FILES/VMS-SOUTH RESIDENCE.xlsx', ["VMS-SOUTH RESIDENCE-'26"], true, true],
+  ['MAG 318', MUQEET_DRIVE, '/VMS-DATA FILES/VMS-MAG 318.xlsx', ["VMS-MAG 318-'26"], true, true]
 ];
 function sources() {
   try { if (process.env.VMS_SOURCES) return JSON.parse(process.env.VMS_SOURCES); } catch (e) {}
