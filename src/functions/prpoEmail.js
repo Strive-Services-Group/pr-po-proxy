@@ -51,9 +51,21 @@ function prHb(b){ return PROC.has(b)?'Procurement':(OPS.has(b)?'Operations to Co
 function prAge(r){ const sd=r['Step date and time']; return ageDays(sd!=null? sd : r['Created date']); }
 function poAge(r){ const sd=r['Step date and time']; return ageDays(sd!=null? sd : (r['Created date and time']!=null? r['Created date and time'] : r['Requested receipt date'])); }
 
+/* ---- USER-based routing: pending-with (by status) -> user's department -> division ---- */
+const USER_DEPT={"Abdul Basit Raza":"Building Services","Abdul.basit":"IT","Abdul.Muqeet":"Security Services","Admin":"IT","admin.hk":"Housekeeping Services","Adnan.Ullah":"Procurement","Ahamed Noorullah Mohamed":"Accomodation Services","Ahmed.Odeh":"Building Services","Aparna.Pauly":"Procurement","arman.b":"Accounts & Tax","ayman.g":"Accounts & Tax","Ayman.ismail":"Accounts & Tax","Buying Agent Concierge":"Concierge Services","D365CRM ADMIN":"IT","D365CRMADMIN":"IT","Dinesh Laxman Laxman":"Building Services","dinesh.laxman":"Building Services","Gokul Krishna Pillai":"Contracted Cleaning Services","Gokul.Krishna":"Contracted Cleaning Services","IT DEPARTMENT":"IT","Joe Orlain Jamisola":"Concierge Services","Judhin.prabhakar":"Contracted Cleaning Services","Layusha.cleatus":"Procurement","Mohamed.Ashraf":"Procurement","Mohammad.w":"Building Services","Muhammad Shehzad Ahmeduddin":"IT","muhammad.mustajab":"Accounts & Tax","Nathan.Buys":"Building Services","Patrick.Smith":"Accounts & Tax","Pramod Chandrasenan Chandrasenan":"Security Services","pramod.c":"Security Services","Qasim Jahangir":"QHSE","Roderick Red Palma":"Procurement","roderick.red":"Procurement","Shaik.baba":"Housekeeping Services","Shakir Ameer Bakhsh":"FitOut Services","Shijil Choyaprath Chandran":"Home Maintenance Services","shijil.c":"Home Maintenance Services","Sirinikhil":"Housekeeping Services","teena.k":"Concierge Services","Ubaid":"IT","Zaheer Ahmed Ameer":"Accomodation Services","Zaheer.Ahmed":"Accomodation Services"};
+const _norm=s=>String(s==null?'':s).trim().toLowerCase().replace(/\s+/g,' ');
+const _UN={}; for(const k in USER_DEPT){ _UN[_norm(k)]=USER_DEPT[k]; }
+function deptForUser(u){ return _UN[_norm(u)]||''; }
+const DEPT_DIV={'Procurement':'procurement','Accounts & Tax':'finance','Home Maintenance Services':'ops_hm','FitOut Services':'ops_hm'};
+function divForDept(d){ return DEPT_DIV[d]||'ops_all'; }
+function prPendingWith(r){ const st=String(r['Status']||''); if(st==='Draft') return String(r['Preparer']||'').trim(); if(st==='Approved') return String(r['Accepted By/Assign To']||'').trim(); return String(r['Pending Approver/User']||'').trim(); }
+// PR -> pending-with user's department; PO -> functional home (Sent-to-Supplier/Procurement->procurement, else finance)
+function itemDivision(it){ if(it.doc==='PR') return divForDept(it.dept); return (it.stage==='Procurement'||it.stage==='Sent to Supplier')?'procurement':'finance'; }
+const STAGE_ORDER=[['PR','Procurement'],['PR','Operations to Confirm'],['PR','Dep Managers'],['PR','Finance'],['PR','Director'],['PR','CEO'],['PO','Procurement'],['PO','Finance'],['PO','Director'],['PO','CEO'],['PO','Sent to Supplier'],['PO','Pending Invoicing']];
+
 function buildItems(prRows, poRows){
   const items=[];
-  for(const r of prRows){ if(!prLive(r)) continue; const st=prHb(PR_MAP[r['Step name']]); items.push({ref:r['Purchase requisition'],doc:'PR',typ:String(r['Purchase requisition']||'').startsWith('CPR')?'CPR':'PR',stage:st,age:prAge(r),owner:(String(r['Pending Approver/User']||'').trim()||'(unassigned)'),dept:String(r['Department']||'').trim(),value:amt(r),vendor:'',raw:r}); }
+  for(const r of prRows){ if(!prLive(r)) continue; const st=prHb(PR_MAP[r['Step name']]); const pw=prPendingWith(r); const rdept=deptForUser(pw)||String(r['Department']||'').trim(); items.push({ref:r['Purchase requisition'],doc:'PR',typ:String(r['Purchase requisition']||'').startsWith('CPR')?'CPR':'PR',stage:st,age:prAge(r),owner:(pw||'(unassigned)'),dept:rdept,value:amt(r),vendor:'',raw:r}); }
   for(const r of poRows){ const bk=poBucket(r); if(!bk) continue; const ven=String(r['Vendor name']||'-').trim(); const own=(bk==='Sent to Supplier'||bk==='Pending Invoicing')?ven:(String(r['Pending Approver/User']||'').trim()||'(unassigned)'); items.push({ref:r['Purchase order'],doc:'PO',typ:'PO',stage:bk,age:poAge(r),owner:own,dept:String(r['Department']||'').trim(),value:amt(r),vendor:ven,raw:r}); }
   return items;
 }
@@ -122,23 +134,23 @@ function f_dept(its,L,col){
 /* ---- divisions ---- */
 const DIVS = [
  {key:'procurement', mail:'PRPO_PROC_MAIL_TO', xlsx:'PRPO_Procurement_list.xlsx', title:'Procurement',
-  heading:'PR / PO Pipeline &#8212; Procurement', sub:'Procurement-stage PR &amp; PO, plus POs sent to suppliers', accent:'#3b82f6',
+  heading:'PR / PO Pipeline &#8212; Procurement', sub:'Items pending with Procurement-department users &#183; plus procurement &amp; sent-to-supplier POs', accent:'#3b82f6',
   pr:['Procurement'], po:['Procurement','Sent to Supplier'],
   findings:[f=>f_owners(f,'A','#3b82f6','Pending with &#8212; procurement queue'), f=>f_vendor(f,'Sent to Supplier','B','#a855f7','Sent to Supplier &#8212; awaiting delivery / GRN','Chase the suppliers below for delivery, then move to invoicing.'), f=>f_value(f,'C','#2563eb'), f=>f_oldest(f,'D','#dc2626'), f=>f_sla(f,'E','#e11d48')]},
  {key:'finance', mail:'PRPO_FIN_MAIL_TO', xlsx:'PRPO_Finance_list.xlsx', title:'Finance &amp; Approvals',
-  heading:'PR / PO Pipeline &#8212; Finance &amp; Approvals', sub:'Finance &amp; Director approvals (PR) and POs pending invoicing', accent:'#22c55e',
+  heading:'PR / PO Pipeline &#8212; Finance &amp; Approvals', sub:'Items pending with Accounts &amp; Tax (finance) users &#183; plus POs pending invoicing', accent:'#22c55e',
   pr:['Finance','Director','CEO'], po:['Finance','Pending Invoicing','Director','CEO'],
   findings:[f=>f_owners(f,'A','#22c55e','Pending approvals &#8212; waiting on you'), f=>f_vendor(f,'Pending Invoicing','B','#f97316','Pending Invoicing &#8212; Accounts to post','Post the supplier invoices below to clear these from the ledger.'), f=>f_value(f,'C','#2563eb'), f=>f_oldest(f,'D','#dc2626'), f=>f_sla(f,'E','#e11d48')]},
  {key:'ops_hm', mail:'PRPO_OPSHM_MAIL_TO', xlsx:'PRPO_Operations_HomeMaint_FitOut_list.xlsx', title:'Operations &#183; Home Maintenance + FitOut',
-  heading:'PR / PO Pipeline &#8212; Operations (Home Maintenance &amp; FitOut)', sub:'Operations to Confirm &amp; Dep Managers &#8212; Home Maintenance + FitOut Services', accent:'#14b8a6',
+  heading:'PR / PO Pipeline &#8212; Operations (Home Maintenance &amp; FitOut)', sub:'Items pending with Home Maintenance &amp; FitOut department users', accent:'#14b8a6',
   pr:['Operations to Confirm','Dep Managers'], po:[], depts:new Set(['Home Maintenance Services','FitOut Services']),
   findings:[f=>f_owners(f,'A','#14b8a6','Pending with &#8212; Home Maintenance &amp; FitOut queue'), f=>f_value(f,'B','#2563eb'), f=>f_oldest(f,'C','#dc2626'), f=>f_sla(f,'D','#e11d48')]},
  {key:'ops_all', mail:'PRPO_OPSALL_MAIL_TO', xlsx:'PRPO_Operations_AllDepts_list.xlsx', title:'Operations &#183; All Departments',
-  heading:'PR / PO Pipeline &#8212; Operations (All Departments)', sub:'Operations to Confirm &amp; Dep Managers &#8212; all departments except Home Maintenance &amp; FitOut', accent:'#8b5cf6',
+  heading:'PR / PO Pipeline &#8212; Operations (All Departments)', sub:'Items pending with all other departments&#8217; users (Building Services, IT, Security, Housekeeping, etc.)', accent:'#8b5cf6',
   pr:['Operations to Confirm','Dep Managers'], po:[], xdepts:new Set(['Home Maintenance Services','FitOut Services']),
   findings:[f=>f_owners(f,'A','#8b5cf6','Pending with &#8212; who is holding the queue'), f=>f_dept(f,'B','#4f46e5'), f=>f_value(f,'C','#2563eb'), f=>f_oldest(f,'D','#dc2626'), f=>f_sla(f,'E','#e11d48')]},
 ];
-function filterDiv(items,cfg){ return items.filter(it=> ((it.doc==='PR'&&cfg.pr.includes(it.stage))||(it.doc==='PO'&&cfg.po.includes(it.stage))) && (!cfg.depts||cfg.depts.has(it.dept)) && (!cfg.xdepts||!cfg.xdepts.has(it.dept)) ); }
+function filterDiv(items,cfg){ return items.filter(it=>itemDivision(it)===cfg.key); }
 
 async function buildXlsxBase64(fil, cfg){
   const wb=new ExcelJS.Workbook(); wb.creator='Strive Services Group'; wb.created=new Date();
@@ -194,8 +206,8 @@ function f_details(fil, cfg){
 
 function buildDivision(cfg, items){
   const fil=filterDiv(items,cfg);
-  const pairs=cfg.pr.map(bk=>['PR',bk]).concat(cfg.po.map(bk=>['PO',bk]));
-  const agg={}; for(const it of fil){ const k=it.doc+'|'+it.stage; const set=pairs.some(([d,bk])=>d===it.doc&&bk===it.stage); if(!set) continue; const x=agg[k]||(agg[k]={n:0,sum:0,c:0,amt:0}); x.n++; x.amt+=it.value; if(it.age!=null){x.sum+=it.age;x.c++;} }
+  const agg={}; for(const it of fil){ const k=it.doc+'|'+it.stage; const x=agg[k]||(agg[k]={n:0,sum:0,c:0,amt:0}); x.n++; x.amt+=it.value; if(it.age!=null){x.sum+=it.age;x.c++;} }
+  const pairs=STAGE_ORDER.filter(p=>agg[p[0]+'|'+p[1]]);
   const cards=cardrow2(pairs,agg);
   const analysis=cfg.findings.map(fn=>fn(fil)).join('');
   const stamp=new Date(Date.now()+4*3600*1000).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric',timeZone:'UTC'});
