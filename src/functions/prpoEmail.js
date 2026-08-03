@@ -153,6 +153,26 @@ function buildXlsxBase64(fil){
   return XLSX.write(wb,{type:'base64',bookType:'xlsx'});
 }
 
+/* ---- HS-D08 style: navy shell header/footer + PR/PO detail line-item list ---- */
+const HF="'Segoe UI', Aptos, Verdana, Arial, sans-serif", HNAVY='#0F2A6B', HGOLD='#FAC775', HMUT='#C9D3EA', HBORD='#D8DEE8';
+function f_details(fil, cfg){
+  const rows=fil.slice().sort((a,b2)=>(b2.age||0)-(a.age||0)).slice(0,15);
+  const desc=it=> it.doc==='PO' ? (it.raw['Vendor name']||'-') : (it.raw['Name']||'-');
+  const th='padding:7px 9px;font:700 10px '+HF+';color:#5A6578;text-transform:uppercase;letter-spacing:.3px;background:#F4F6FB;';
+  const head='<tr>'+[['Document','l'],['Description','l'],['Waiting on step','l'],['Pending with','l'],['Value','r'],['Age','r']].map(c=>'<td '+(c[1]==='r'?'align="right" ':'')+'style="'+th+'">'+c[0]+'</td>').join('')+'</tr>';
+  const body=rows.map(it=>{ const a=Math.round(it.age||0); const acol=a>30?'#B42318':(a>7?'#9A6700':'#1F7A33'); const td='padding:6px 9px;font:400 12px '+HF+';color:#1A2233;border-bottom:1px solid '+HBORD+';';
+    return '<tr><td style="'+td+'font-weight:600;white-space:nowrap;">'+esc(it.ref)+'</td>'
+      +'<td style="'+td+'">'+esc(String(desc(it)).slice(0,46))+'</td>'
+      +'<td style="'+td+'color:'+HNAVY+';white-space:nowrap;">'+esc(String(it.raw['Step name']||'-').slice(0,28))+'</td>'
+      +'<td style="'+td+'font-weight:600;white-space:nowrap;">'+esc(String(it.owner||'-').slice(0,18))+'</td>'
+      +'<td align="right" style="'+td+'font-weight:600;white-space:nowrap;">AED '+money(it.value)+'</td>'
+      +'<td align="right" style="'+td+'font-weight:700;color:'+acol+';white-space:nowrap;">'+a+'d</td></tr>'; }).join('');
+  const more=fil.length>15?'<tr><td colspan="6" style="padding:7px 9px;font:400 11px '+HF+';color:#5A6578;background:#F9FAFC;">&#8230;and '+(fil.length-15)+' more &#8212; full list in the attached '+cfg.xlsx+'.</td></tr>':'';
+  return '<div style="font:700 14px '+HF+';color:'+HNAVY+';margin:16px 0 2px;">Details &#8212; PR / PO list</div>'
+    +'<div style="font:400 11px '+HF+';color:#5A6578;margin:0 0 10px;">Oldest first &#183; age = days at the current step.</div>'
+    +'<table role="presentation" width="'+W+'" cellpadding="0" cellspacing="0" style="width:'+W+'px;border:1px solid '+HBORD+';border-radius:8px;border-collapse:separate;overflow:hidden;">'+head+body+more+'</table>';
+}
+
 function buildDivision(cfg, items){
   const fil=filterDiv(items,cfg);
   const pairs=cfg.pr.map(bk=>['PR',bk]).concat(cfg.po.map(bk=>['PO',bk]));
@@ -161,19 +181,26 @@ function buildDivision(cfg, items){
   const analysis=cfg.findings.map(fn=>fn(fil)).join('');
   const stamp=new Date(Date.now()+4*3600*1000).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric',timeZone:'UTC'});
   const tot=fil.length, totv=fil.reduce((a,it)=>a+it.value,0);
-  const acc='<table cellpadding="0" cellspacing="0" border="0" width="'+W+'" style="width:'+W+'px;border-collapse:collapse;margin:0 0 16px;border-radius:3px;overflow:hidden;"><tr><td style="height:5px;background:'+cfg.accent+';font-size:0;line-height:0;">&nbsp;</td></tr></table>';
-  const att='<div style="border:1px dashed #b6c2d4;border-radius:10px;background:#f8fafc;padding:11px 14px;margin:12px 0 2px;font-family:'+FONT+';font-size:12px;color:#475569;">&#128206; <b style="color:'+NAVY+';">Attachment:</b> <span style="color:'+NAVY+';font-weight:700;">'+cfg.xlsx+'</span> &#8212; full line-item list of all '+b(tot)+' items (Ref, Doc, Stage, Status, Department, Pending With / Vendor, Value, Age, dates), sorted oldest first.</div>';
-  const html='<div style="font-family:'+FONT+';color:#22303c;width:'+W+'px;">'
-    +'<table cellpadding="0" cellspacing="0" border="0" width="'+W+'" style="width:'+W+'px;"><tr>'
-    +'<td><div style="font-family:'+FONT+';font-weight:800;font-size:20px;color:'+NAVY+';">'+cfg.heading+'</div><div style="font-family:'+FONT+';font-size:12px;color:#7688a0;margin-top:2px;">'+cfg.sub+'</div></td>'
-    +'<td align="right" valign="top" style="font-family:'+FONT+';font-size:12px;color:#607083;">'+stamp+' &#183; <a href="'+DASH+'" style="color:#145A95;font-weight:700;text-decoration:none;">Open Dashboard &#8599;</a></td></tr></table>'+acc
-    +cards
-    +'<div style="font-family:'+FONT+';font-size:12px;color:#607083;margin:12px 0 4px;">This queue: '+b(tot)+' open items &#183; '+b('AED '+money(totv))+' &#183; live-pipeline logic, reconciles to the dashboard.</div>'+att
-    +'<div style="font-family:'+FONT+';font-weight:800;font-size:15px;color:'+NAVY+';margin:14px 0 2px;">&#128269; Analysis &#8212; who to chase today</div>'
+  const att='<div style="border:1px dashed #b6c2d4;border-radius:10px;background:#f8fafc;padding:11px 14px;margin:12px 0 2px;font:400 12px '+HF+';color:#475569;">&#128206; <b style="color:'+HNAVY+';">Attachment:</b> <span style="color:'+HNAVY+';font-weight:700;">'+cfg.xlsx+'</span> &#8212; full line-item list of all '+b(tot)+' items (Ref, Doc, Stage, Status, Department, Pending With / Vendor, Value, Age, dates), sorted oldest first.</div>';
+  const titleTxt=cfg.title.replace(/&#183;/g,'·').replace(/&amp;/g,'&');
+  const inner='<div style="width:'+W+'px;font-family:'+FONT+';color:#22303c;">'
+    +'<div style="font:400 12px '+HF+';color:#607083;margin:0 0 10px;">This queue: '+b(tot)+' open items &#183; '+b('AED '+money(totv))+' &#183; live-pipeline logic, reconciles to the dashboard.</div>'
+    +cards+att
+    +'<div style="font-family:'+FONT+';font-weight:800;font-size:15px;color:'+NAVY+';margin:16px 0 2px;">&#128269; Analysis &#8212; who to chase today</div>'
     +'<div style="font-family:'+FONT+';font-size:11.5px;color:#7688a0;margin:0 0 11px;">Auto-generated daily from the latest data, scoped to '+cfg.title+'.</div>'
     +'<div style="width:'+W+'px;">'+analysis+'</div>'
-    +'<div style="font-family:'+FONT+';font-size:10px;color:#8b98a5;margin-top:8px;">Automated daily report &#183; Strive Services Group &#183; Dynamics 365 PR/PO exports</div></div>';
-  const wrap='<!doctype html><html><head><meta charset="utf-8"><title>'+cfg.heading+'</title></head><body style="margin:0;background:#eef2f7;font-family:'+FONT+';"><div style="padding:24px;"><div style="background:#fff;padding:28px;border-radius:16px;display:inline-block;box-shadow:0 3px 14px rgba(15,23,42,.10);">'+html+'</div></div></body></html>';
+    +f_details(fil,cfg)
+    +'</div>';
+  const shell='<table role="presentation" width="1040" cellpadding="0" cellspacing="0" style="width:1040px;max-width:1040px;">'
+    +'<tr><td style="background:'+HNAVY+';border-radius:10px 10px 0 0;padding:18px 22px;"><table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>'
+    +'<td style="font:700 20px '+HF+';color:#fff;">'+cfg.heading+'</td>'
+    +'<td align="right" valign="top" style="font:600 12px '+HF+';color:'+HGOLD+';">'+stamp+'</td></tr></table>'
+    +'<div style="font:400 12px '+HF+';color:'+HMUT+';margin-top:4px;">'+cfg.sub+' &#183; <a href="'+DASH+'" style="color:#9DB2E6;text-decoration:none;">Live dashboard</a></div></td></tr>'
+    +'<tr><td style="background:#fff;border-left:1px solid '+HBORD+';border-right:1px solid '+HBORD+';padding:18px 20px;">'+inner+'</td></tr>'
+    +'<tr><td style="background:'+HNAVY+';border-radius:0 0 10px 10px;padding:14px 20px;font:400 11px '+HF+';color:'+HMUT+';">'
+    +'<div style="color:'+HGOLD+';font-weight:700;letter-spacing:.5px;">FOR EXCELLENCE WE STRIVE</div>'
+    +'<div style="margin-top:6px;">PR / PO Pipeline &#183; '+titleTxt+' &#183; '+stamp+' &#183; automated daily 10:00 AM Dubai. Source: live-pipeline PR/PO in D365 F&amp;O. <b>Age = days at the current workflow step.</b> Full line-item list attached ('+cfg.xlsx+').</div></td></tr></table>';
+  const wrap='<!doctype html><html><head><meta charset="utf-8"><title>'+cfg.heading+'</title></head><body style="margin:0;background:#EEF1F6;"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#EEF1F6;padding:20px 0;"><tr><td align="center">'+shell+'</td></tr></table></body></html>';
   const subject='PR / PO Pipeline — '+cfg.title.replace(/&#183;/g,'·').replace(/&amp;/g,'&')+' ('+stamp+')';
   return { subject, html:wrap, xlsxB64:buildXlsxBase64(fil), count:tot, value:totv, cfg };
 }
