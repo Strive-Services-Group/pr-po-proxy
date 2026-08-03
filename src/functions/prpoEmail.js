@@ -21,6 +21,7 @@
  */
 const { app } = require('@azure/functions');
 const XLSX = require('xlsx');
+const ExcelJS = require('exceljs');
 
 const PR_URL = process.env.PRPO_PR_URL || 'https://strive-services-group.github.io/PR-PO-Pipeline-Dashboard/pr.xlsx';
 const PO_URL = process.env.PRPO_PO_URL || 'https://strive-services-group.github.io/PR-PO-Pipeline-Dashboard/po.xlsx';
@@ -139,18 +140,36 @@ const DIVS = [
 ];
 function filterDiv(items,cfg){ return items.filter(it=> ((it.doc==='PR'&&cfg.pr.includes(it.stage))||(it.doc==='PO'&&cfg.po.includes(it.stage))) && (!cfg.depts||cfg.depts.has(it.dept)) && (!cfg.xdepts||!cfg.xdepts.has(it.dept)) ); }
 
-function buildXlsxBase64(fil){
-  const cols=['Ref','Doc','Stage / Bucket','Step name','Status','Department','Location','Pending With','Vendor','Value (AED)','Age (days)','Created','Step date','Title / Name','Preparer / Linked PR'];
-  const aoa=[cols];
+async function buildXlsxBase64(fil, cfg){
+  const wb=new ExcelJS.Workbook(); wb.creator='Strive Services Group'; wb.created=new Date();
+  const ws=wb.addWorksheet('Open Items', { views:[{ state:'frozen', ySplit:1 }], properties:{ defaultRowHeight:16 } });
+  ws.columns=[
+    {header:'Ref',key:'ref',width:16},{header:'Doc',key:'doc',width:7},{header:'Stage / Bucket',key:'stage',width:22},
+    {header:'Step name',key:'step',width:34},{header:'Status',key:'status',width:22},{header:'Department',key:'dept',width:26},
+    {header:'Location',key:'loc',width:22},{header:'Pending With',key:'pend',width:20},{header:'Vendor',key:'vendor',width:30},
+    {header:'Value (AED)',key:'value',width:15},{header:'Age (days)',key:'age',width:11},{header:'Created',key:'created',width:13},
+    {header:'Step date',key:'stepd',width:13},{header:'Title / Name',key:'title',width:34},{header:'Preparer / Linked PR',key:'prep',width:20}
+  ];
   fil.slice().sort((a,b2)=>(b2.age||0)-(a.age||0)).forEach(it=>{ const r=it.raw; let status,loc,pend,ven,created,stepd,title,prep;
     if(it.doc!=='PO'){ status=String(r['Status']||''); loc=r['Location']; pend=r['Pending Approver/User']; ven=''; created=ymdStr(r['Created date']); stepd=ymdStr(r['Step date and time']); title=r['Name']; prep=r['Preparer']; }
     else { status=(String(r['Approval status']||'')+' / '+String(r['Purchase order status']||'')).replace(/^ \/ | \/ $/g,''); loc=r['Location']; pend=r['Pending Approver/User']; ven=r['Vendor name']; created=ymdStr(r['Created date and time']); stepd=ymdStr(r['Step date and time']); title=''; prep=r['Purchase requisition']; }
-    aoa.push([it.ref,it.typ,it.stage,r['Step name'],status,it.dept,loc,pend,ven,Math.round(it.value*100)/100,it.age,created,stepd,title,prep]); });
-  const ws=XLSX.utils.aoa_to_sheet(aoa);
-  ws['!cols']=[15,6,20,30,20,26,20,18,26,14,9,12,12,28,16].map(w=>({wch:w}));
-  ws['!autofilter']={ref:'A1:O'+aoa.length};
-  const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,'Open Items');
-  return XLSX.write(wb,{type:'base64',bookType:'xlsx'});
+    ws.addRow({ref:it.ref,doc:it.typ,stage:it.stage,step:r['Step name'],status,dept:it.dept,loc,pend,vendor:ven,value:Math.round((it.value||0)*100)/100,age:(it.age==null?null:it.age),created,stepd,title,prep}); });
+  const DIVCOL={procurement:'FF1D4ED8',finance:'FF16A34A',ops_hm:'FF0F766E',ops_all:'FF7C3AED'};
+  const HEAD=DIVCOL[cfg&&cfg.key]||'FF14315E';
+  const h=ws.getRow(1); h.height=26;
+  h.eachCell(c=>{ c.fill={type:'pattern',pattern:'solid',fgColor:{argb:HEAD}}; c.font={bold:true,color:{argb:'FFFFFFFF'},size:11}; c.alignment={vertical:'middle',horizontal:'center',wrapText:true}; c.border={bottom:{style:'thin',color:{argb:'FF0B2350'}}}; });
+  const N=ws.rowCount;
+  for(let i=2;i<=N;i++){ const row=ws.getRow(i); row.height=15; const zeb=(i%2===1);
+    row.eachCell({includeEmpty:true},c=>{ c.alignment={vertical:'middle'}; c.border={bottom:{style:'hair',color:{argb:'FFE1E7F0'}}}; c.font={size:10.5}; if(zeb){ c.fill={type:'pattern',pattern:'solid',fgColor:{argb:'FFEFF3FA'}}; } });
+    row.getCell('ref').font={bold:true,size:10.5,color:{argb:'FF14315E'}};
+    const vc=row.getCell('value'); vc.numFmt='#,##0'; vc.alignment={vertical:'middle',horizontal:'right'}; vc.font={size:10.5,color:{argb:'FF0F766E'},bold:true};
+    const ac=row.getCell('age'); ac.numFmt='0'; ac.alignment={vertical:'middle',horizontal:'center'};
+    const av=ac.value; if(typeof av==='number'){ ac.font={bold:true,size:10.5,color:{argb: av>30?'FFB42318': av>7?'FF9A6700':'FF1F7A33'}}; }
+    row.getCell('doc').alignment={vertical:'middle',horizontal:'center'};
+  }
+  ws.autoFilter={ from:{row:1,column:1}, to:{row:1,column:15} };
+  const buf=await wb.xlsx.writeBuffer();
+  return Buffer.from(buf).toString('base64');
 }
 
 /* ---- HS-D08 style: navy shell header/footer + PR/PO detail line-item list ---- */
@@ -202,7 +221,7 @@ function buildDivision(cfg, items){
     +'<div style="margin-top:6px;">PR / PO Pipeline &#183; '+titleTxt+' &#183; '+stamp+' &#183; automated daily 10:00 AM Dubai. Source: live-pipeline PR/PO in D365 F&amp;O. <b>Age = days at the current workflow step.</b> Full line-item list attached ('+cfg.xlsx+').</div></td></tr></table>';
   const wrap='<!doctype html><html><head><meta charset="utf-8"><title>'+cfg.heading+'</title></head><body style="margin:0;background:#EEF1F6;"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#EEF1F6;padding:20px 0;"><tr><td align="center">'+shell+'</td></tr></table></body></html>';
   const subject='PR / PO Pipeline — '+cfg.title.replace(/&#183;/g,'·').replace(/&amp;/g,'&')+' ('+stamp+')';
-  return { subject, html:wrap, xlsxB64:buildXlsxBase64(fil), count:tot, value:totv, cfg };
+  return { subject, html:wrap, fil, count:tot, value:totv, cfg };
 }
 
 /* ---- auth + send ---- */
@@ -212,9 +231,10 @@ async function sendDivision(out, context){
   const toList=(process.env[out.cfg.mail]||'').split(/[;,]/).map(s=>s.trim()).filter(Boolean);
   if(!from) throw new Error('MAIL_FROM / PRPO_MAIL_FROM not set');
   if(!toList.length){ if(context) context.log('skip '+out.cfg.key+': '+out.cfg.mail+' not set'); return {sent:false,reason:'no recipients'}; }
+  const xlsxB64=await buildXlsxBase64(out.fil, out.cfg);
   const token=await getToken('https://graph.microsoft.com');
   const r=await fetch('https://graph.microsoft.com/v1.0/users/'+encodeURIComponent(from)+'/sendMail',{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
-    body:JSON.stringify({message:{subject:out.subject,body:{contentType:'HTML',content:out.html},toRecipients:toList.map(a=>({emailAddress:{address:a}})),attachments:[{'@odata.type':'#microsoft.graph.fileAttachment',name:out.cfg.xlsx,contentType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',contentBytes:out.xlsxB64}]},saveToSentItems:true})});
+    body:JSON.stringify({message:{subject:out.subject,body:{contentType:'HTML',content:out.html},toRecipients:toList.map(a=>({emailAddress:{address:a}})),attachments:[{'@odata.type':'#microsoft.graph.fileAttachment',name:out.cfg.xlsx,contentType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',contentBytes:xlsxB64}]},saveToSentItems:true})});
   if(r.status!==202){ const j=await r.json().catch(()=>({})); throw new Error('sendMail '+r.status+' '+JSON.stringify(j.error||j).slice(0,300)); }
   if(context) context.log('sent '+out.cfg.key+' to '+toList.length+' recipients');
   return {sent:true,to:toList.length};
@@ -244,4 +264,4 @@ app.http('prpo-email', { methods:['GET','OPTIONS'], authLevel:'function', route:
   }catch(e){ context.error('prpo-email failed:',e); return {status:500,jsonBody:{error:e.message}}; }
 }});
 
-module.exports = { buildItems, buildDivision, parseXlsx, DIVS };
+module.exports = { buildItems, buildDivision, buildXlsxBase64, parseXlsx, DIVS };
