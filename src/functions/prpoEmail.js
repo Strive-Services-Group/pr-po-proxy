@@ -181,7 +181,7 @@ function buildDivision(cfg, items){
   const analysis=cfg.findings.map(fn=>fn(fil)).join('');
   const stamp=new Date(Date.now()+4*3600*1000).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric',timeZone:'UTC'});
   const tot=fil.length, totv=fil.reduce((a,it)=>a+it.value,0);
-  const att='<div style="border:1px dashed #b6c2d4;border-radius:10px;background:#f8fafc;padding:11px 14px;margin:12px 0 2px;font:400 12px '+HF+';color:#475569;">&#128206; <b style="color:'+HNAVY+';">Attachment:</b> <span style="color:'+HNAVY+';font-weight:700;">'+cfg.xlsx+'</span> &#8212; full line-item list of all '+b(tot)+' items (Ref, Doc, Stage, Status, Department, Pending With / Vendor, Value, Age, dates), sorted oldest first.</div>';
+  const att='<div style="border:1px solid #cbd9ec;border-radius:10px;background:#f2f7ff;padding:11px 14px;margin:12px 0 2px;font:400 12px '+HF+';color:#334867;">&#8505;&#65039; <b style="color:'+HNAVY+';">Note &#8212; Data source of truth:</b> all data and counts are based on the F&amp;O PR / PO actual data (Dynamics 365 Finance &amp; Operations).</div>';
   const titleTxt=cfg.title.replace(/&#183;/g,'·').replace(/&amp;/g,'&');
   const inner='<div style="width:'+W+'px;font-family:'+FONT+';color:#22303c;">'
     +'<div style="font:400 12px '+HF+';color:#607083;margin:0 0 10px;">This queue: '+b(tot)+' open items &#183; '+b('AED '+money(totv))+' &#183; live-pipeline logic, reconciles to the dashboard.</div>'
@@ -195,7 +195,7 @@ function buildDivision(cfg, items){
     +'<tr><td style="background:'+HNAVY+';border-radius:10px 10px 0 0;padding:18px 22px;"><table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>'
     +'<td style="font:700 20px '+HF+';color:#fff;">'+cfg.heading+'</td>'
     +'<td align="right" valign="top" style="font:600 12px '+HF+';color:'+HGOLD+';">'+stamp+'</td></tr></table>'
-    +'<div style="font:400 12px '+HF+';color:'+HMUT+';margin-top:4px;">'+cfg.sub+' &#183; <a href="'+DASH+'" style="color:#9DB2E6;text-decoration:none;">Live dashboard</a></div></td></tr>'
+    +'<div style="font:400 12px '+HF+';color:'+HMUT+';margin-top:4px;">'+cfg.sub+' &#183; <a href="'+DASH+'" style="color:'+HGOLD+';font-weight:800;text-decoration:underline;">Open Live Dashboard &#8599;</a></div></td></tr>'
     +'<tr><td style="background:#fff;border-left:1px solid '+HBORD+';border-right:1px solid '+HBORD+';padding:18px 20px;">'+inner+'</td></tr>'
     +'<tr><td style="background:'+HNAVY+';border-radius:0 0 10px 10px;padding:14px 20px;font:400 11px '+HF+';color:'+HMUT+';">'
     +'<div style="color:'+HGOLD+';font-weight:700;letter-spacing:.5px;">FOR EXCELLENCE WE STRIVE</div>'
