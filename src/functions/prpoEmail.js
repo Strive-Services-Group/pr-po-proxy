@@ -58,15 +58,26 @@ const _UN={}; for(const k in USER_DEPT){ _UN[_norm(k)]=USER_DEPT[k]; }
 function deptForUser(u){ return _UN[_norm(u)]||''; }
 const DEPT_DIV={'Procurement':'procurement','Accounts & Tax':'finance','Home Maintenance Services':'ops_hm','FitOut Services':'ops_hm'};
 function divForDept(d){ return DEPT_DIV[d]||'ops_all'; }
+// Ops-confirm steps: the person who must act is the requisition department's operations confirmer,
+// NOT the procurement approver sitting in the F&O user columns. Map requisition department -> responsible ops user.
+const DEPT_OPSUSER={"Building Services":"dinesh.laxman","Landscaping Services":"dinesh.laxman","Contracted Cleaning Services":"Gokul.Krishna","Security Services":"pramod.c","FitOut Services":"Shakir Ameer Bakhsh","Home Maintenance Services":"shijil.c"};
+function opsUserForDept(d){ return DEPT_OPSUSER[String(d==null?'':d).trim()]||''; }
 function prPendingWith(r){ const st=String(r['Status']||''); if(st==='Draft') return String(r['Preparer']||'').trim(); if(st==='Approved') return String(r['Accepted By/Assign To']||'').trim(); return String(r['Pending Approver/User']||'').trim(); }
-// PR -> pending-with user's department; PO -> functional home (Sent-to-Supplier/Procurement->procurement, else finance)
-function itemDivision(it){ if(it.doc==='PR') return divForDept(it.dept); return (it.stage==='Procurement'||it.stage==='Sent to Supplier')?'procurement':'finance'; }
+// Routing: PO -> functional home (Sent-to-Supplier/Procurement->procurement, else finance).
+// PR "Operations to Confirm" bucket (Unit-price-updated / Quotation-shared-to-Ops steps) -> by the REQUISITION's own
+//   department (row Department col), so it lands in the Operations sheets regardless of which procurement user holds it.
+// All other PR -> by the pending-with USER's assigned department (falls back to row dept if the user is unmapped).
+function itemDivision(it){
+  if(it.doc==='PO') return (it.stage==='Procurement'||it.stage==='Sent to Supplier')?'procurement':'finance';
+  if(it.stage==='Operations to Confirm') return (it.dept==='Home Maintenance Services'||it.dept==='FitOut Services')?'ops_hm':'ops_all';
+  return divForDept(it.udept||it.dept);
+}
 const STAGE_ORDER=[['PR','Procurement'],['PR','Operations to Confirm'],['PR','Dep Managers'],['PR','Finance'],['PR','Director'],['PR','CEO'],['PO','Procurement'],['PO','Finance'],['PO','Director'],['PO','CEO'],['PO','Sent to Supplier'],['PO','Pending Invoicing']];
 
 function buildItems(prRows, poRows){
   const items=[];
-  for(const r of prRows){ if(!prLive(r)) continue; const st=prHb(PR_MAP[r['Step name']]); const pw=prPendingWith(r); const rdept=deptForUser(pw)||String(r['Department']||'').trim(); items.push({ref:r['Purchase requisition'],doc:'PR',typ:String(r['Purchase requisition']||'').startsWith('CPR')?'CPR':'PR',stage:st,age:prAge(r),owner:(pw||'(unassigned)'),dept:rdept,value:amt(r),vendor:'',raw:r}); }
-  for(const r of poRows){ const bk=poBucket(r); if(!bk) continue; const ven=String(r['Vendor name']||'-').trim(); const own=(bk==='Sent to Supplier'||bk==='Pending Invoicing')?ven:(String(r['Pending Approver/User']||'').trim()||'(unassigned)'); items.push({ref:r['Purchase order'],doc:'PO',typ:'PO',stage:bk,age:poAge(r),owner:own,dept:String(r['Department']||'').trim(),value:amt(r),vendor:ven,raw:r}); }
+  for(const r of prRows){ if(!prLive(r)) continue; const st=prHb(PR_MAP[r['Step name']]); const pw=prPendingWith(r); const rowdept=String(r['Department']||'').trim(); const udept=deptForUser(pw); const owner=((st==='Operations to Confirm'?(opsUserForDept(rowdept)||pw):pw)||'(unassigned)'); items.push({ref:r['Purchase requisition'],doc:'PR',typ:String(r['Purchase requisition']||'').startsWith('CPR')?'CPR':'PR',stage:st,age:prAge(r),owner:owner,dept:rowdept,udept:udept,value:amt(r),vendor:'',raw:r}); }
+  for(const r of poRows){ const bk=poBucket(r); if(!bk) continue; const ven=String(r['Vendor name']||'-').trim(); const poStat=String(r['Approval status']||''); const createdBy=String(r['Created by']||r['Created By']||'').trim(); const poPend=String(r['Pending Approver/User']||'').trim(); const own=(bk==='Sent to Supplier'||bk==='Pending Invoicing')?ven:((poStat==='Draft'?(createdBy||poPend):poPend)||'(unassigned)'); items.push({ref:r['Purchase order'],doc:'PO',typ:'PO',stage:bk,age:poAge(r),owner:own,dept:String(r['Department']||'').trim(),value:amt(r),vendor:ven,raw:r}); }
   return items;
 }
 
@@ -142,11 +153,11 @@ const DIVS = [
   pr:['Finance','Director','CEO'], po:['Finance','Pending Invoicing','Director','CEO'],
   findings:[f=>f_owners(f,'A','#22c55e','Pending approvals &#8212; waiting on you'), f=>f_vendor(f,'Pending Invoicing','B','#f97316','Pending Invoicing &#8212; Accounts to post','Post the supplier invoices below to clear these from the ledger.'), f=>f_value(f,'C','#2563eb'), f=>f_oldest(f,'D','#dc2626'), f=>f_sla(f,'E','#e11d48')]},
  {key:'ops_hm', mail:'PRPO_OPSHM_MAIL_TO', xlsx:'PRPO_Operations_HomeMaint_FitOut_list.xlsx', title:'Operations &#183; Home Maintenance + FitOut',
-  heading:'PR / PO Pipeline &#8212; Operations (Home Maintenance &amp; FitOut)', sub:'Items pending with Home Maintenance &amp; FitOut department users', accent:'#14b8a6',
+  heading:'PR / PO Pipeline &#8212; Operations (Home Maintenance &amp; FitOut)', sub:'Operations-to-confirm &amp; dep-manager PRs whose requisition department is Home Maintenance or FitOut', accent:'#14b8a6',
   pr:['Operations to Confirm','Dep Managers'], po:[], depts:new Set(['Home Maintenance Services','FitOut Services']),
   findings:[f=>f_owners(f,'A','#14b8a6','Pending with &#8212; Home Maintenance &amp; FitOut queue'), f=>f_value(f,'B','#2563eb'), f=>f_oldest(f,'C','#dc2626'), f=>f_sla(f,'D','#e11d48')]},
  {key:'ops_all', mail:'PRPO_OPSALL_MAIL_TO', xlsx:'PRPO_Operations_AllDepts_list.xlsx', title:'Operations &#183; All Departments',
-  heading:'PR / PO Pipeline &#8212; Operations (All Departments)', sub:'Items pending with all other departments&#8217; users (Building Services, IT, Security, Housekeeping, etc.)', accent:'#8b5cf6',
+  heading:'PR / PO Pipeline &#8212; Operations (All Departments)', sub:'Operations-to-confirm &amp; dep-manager PRs for all other requisition departments (Building Services, Contracted Cleaning, Landscaping, etc.)', accent:'#8b5cf6',
   pr:['Operations to Confirm','Dep Managers'], po:[], xdepts:new Set(['Home Maintenance Services','FitOut Services']),
   findings:[f=>f_owners(f,'A','#8b5cf6','Pending with &#8212; who is holding the queue'), f=>f_dept(f,'B','#4f46e5'), f=>f_value(f,'C','#2563eb'), f=>f_oldest(f,'D','#dc2626'), f=>f_sla(f,'E','#e11d48')]},
 ];
