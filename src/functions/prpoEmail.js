@@ -76,8 +76,11 @@ const STAGE_ORDER=[['PR','Procurement'],['PR','Operations to Confirm'],['PR','De
 
 function buildItems(prRows, poRows){
   const items=[];
-  for(const r of prRows){ if(!prLive(r)) continue; const st=prHb(PR_MAP[r['Step name']]); const pw=prPendingWith(r); const rowdept=String(r['Department']||'').trim(); const udept=deptForUser(pw); const owner=((st==='Operations to Confirm'?(opsUserForDept(rowdept)||pw):pw)||'(unassigned)'); items.push({ref:r['Purchase requisition'],doc:'PR',typ:String(r['Purchase requisition']||'').startsWith('CPR')?'CPR':'PR',stage:st,age:prAge(r),owner:owner,dept:rowdept,udept:udept,value:amt(r),vendor:'',raw:r}); }
-  for(const r of poRows){ const bk=poBucket(r); if(!bk) continue; const ven=String(r['Vendor name']||'-').trim(); const poStat=String(r['Approval status']||''); const createdBy=String(r['Created by']||r['Created By']||'').trim(); const poPend=String(r['Pending Approver/User']||'').trim(); const own=(bk==='Sent to Supplier'||bk==='Pending Invoicing')?ven:((poStat==='Draft'?(createdBy||poPend):poPend)||'(unassigned)'); items.push({ref:r['Purchase order'],doc:'PO',typ:'PO',stage:bk,age:poAge(r),owner:own,dept:String(r['Department']||'').trim(),value:amt(r),vendor:ven,raw:r}); }
+  for(const r of prRows){ if(!prLive(r)) continue; const st=prHb(PR_MAP[r['Step name']]); const pw=prPendingWith(r); const rowdept=String(r['Department']||'').trim(); const udept=deptForUser(pw); const owner=((st==='Operations to Confirm'?(opsUserForDept(rowdept)||pw):pw)||'(unassigned)'); items.push({ref:r['Purchase requisition'],doc:'PR',typ:String(r['Purchase requisition']||'').startsWith('CPR')?'CPR':'PR',stage:st,age:prAge(r),owner:owner,dept:rowdept,udept:udept,value:amt(r),vendor:'',ppend:true,raw:r}); }
+  // PO owner + "genuinely pending a person?" flag. Bucket cards keep the dashboard logic; the pending-with analysis
+  // only counts a PO when it is actually awaiting a person: In review -> Pending Approver/User, Draft -> Created by.
+  // Confirmed/Approved keep their bucket (per dashboard) but are NOT pending anyone (ppend=false). Vendor buckets -> vendor.
+  for(const r of poRows){ const bk=poBucket(r); if(!bk) continue; const ven=String(r['Vendor name']||'-').trim(); const poStat=String(r['Approval status']||''); const createdBy=String(r['Created by']||r['Created By']||'').trim(); const poPend=String(r['Pending Approver/User']||'').trim(); const isVenBk=(bk==='Sent to Supplier'||bk==='Pending Invoicing'); let own,ppend; if(isVenBk){ own=ven; ppend=false; } else if(poStat==='In review'){ own=poPend||'(unassigned)'; ppend=true; } else if(poStat==='Draft'){ own=createdBy||'(unassigned)'; ppend=true; } else { own=poPend||'(unassigned)'; ppend=false; } items.push({ref:r['Purchase order'],doc:'PO',typ:'PO',stage:bk,age:poAge(r),owner:own,dept:String(r['Department']||'').trim(),value:amt(r),vendor:ven,ppend:ppend,raw:r}); }
   return items;
 }
 
@@ -96,14 +99,16 @@ function SH(t,s){ return '<div style="font-family:'+FONT+';font-weight:800;font-
 
 /* ---- finding builders ---- */
 function grpBy(arr,key){ const g={}; for(const it of arr){ const k=key(it); (g[k]=g[k]||[]).push(it); } return g; }
+function dchip(doc){ const c=doc==='PO'?'#0891b2':'#2563eb'; return ' <span style="font-family:'+FONT+';font-size:9px;font-weight:800;letter-spacing:.3px;color:#ffffff;background:'+c+';padding:1px 5px;border-radius:4px;vertical-align:middle;">('+doc+')</span>'; }
 function f_owners(its,L,col,title,label){
-  const persons=its.filter(it=>it.stage!=='Sent to Supplier'&&it.stage!=='Pending Invoicing');
-  const g={}; for(const it of persons){ const e=g[it.owner]||(g[it.owner]={n:0,ages:[],val:0,br:0,bk:{}}); e.n++; e.val+=it.value; e.bk[it.stage]=(e.bk[it.stage]||0)+1; if(it.age!=null){e.ages.push(it.age); if(it.age>7)e.br++;} }
-  const rows=[]; for(const [u,e] of Object.entries(g).sort((a,b2)=>b2[1].n-a[1].n)){ if(u==='(unassigned)')continue; const stg=Object.entries(e.bk).sort((a,b2)=>b2[1]-a[1])[0][0]; rows.push([nm(u),sv(stg,COLOR[stg]),String(e.n),agec(avg(e.ages)),agec(e.ages.length?Math.max(...e.ages):0),sv(String(e.br),'#b91c1c'),'AED '+money(e.val)]); if(rows.length>=6)break; }
+  const persons=its.filter(it=>it.ppend!==false&&it.stage!=='Sent to Supplier'&&it.stage!=='Pending Invoicing');
+  const g={}; for(const it of persons){ const key=String(it.owner==null?'':it.owner).trim().toLowerCase()+'|'+it.doc; const e=g[key]||(g[key]={n:0,ages:[],val:0,br:0,bk:{},disp:{},doc:it.doc}); e.n++; e.val+=it.value; e.bk[it.stage]=(e.bk[it.stage]||0)+1; e.disp[it.owner]=(e.disp[it.owner]||0)+1; if(it.age!=null){e.ages.push(it.age); if(it.age>7)e.br++;} }
+  const rows=[]; for(const [u,e] of Object.entries(g).sort((a,b2)=>b2[1].n-a[1].n)){ const okey=u.slice(0,u.lastIndexOf('|')); if(okey==='(unassigned)'||okey==='')continue; const disp=Object.entries(e.disp).sort((a,b2)=>b2[1]-a[1])[0][0]; const stg=Object.entries(e.bk).sort((a,b2)=>b2[1]-a[1])[0][0]; rows.push([nm(disp)+dchip(e.doc),sv(stg,COLOR[stg]),String(e.n),agec(avg(e.ages)),agec(e.ages.length?Math.max(...e.ages):0),sv(String(e.br),'#b91c1c'),'AED '+money(e.val)]); if(rows.length>=6)break; }
   if(!rows.length) return '';
-  const n=persons.length, br=persons.filter(it=>(it.age||0)>7).length;
+  const named=persons.filter(it=>{const o=String(it.owner==null?'':it.owner).trim().toLowerCase(); return o!==''&&o!=='(unassigned)';});
+  const n=named.length, br=named.filter(it=>(it.age||0)>7).length;
   return finding(L,col,title,n+' items',b(n)+' items are pending with a person; '+b(br)+' are past the 7-day SLA. Top owners &#8212; chase these queues first.',
-    otable([[label||'Pending with',150,'l'],['Stage',150,'l'],['Items',52,'c'],['Avg',52,'c'],['Oldest',58,'c'],['Br&gt;7',50,'c'],['Value',120,'r']],rows));
+    otable([[label||'Pending with',172,'l'],['Stage',140,'l'],['Items',52,'c'],['Avg',52,'c'],['Oldest',58,'c'],['Br&gt;7',50,'c'],['Value',120,'r']],rows));
 }
 function f_vendor(its,bucket,L,col,title,action){
   const vs=its.filter(it=>it.stage===bucket); if(!vs.length) return '';
