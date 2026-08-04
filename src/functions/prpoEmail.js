@@ -69,7 +69,11 @@ function prPendingWith(r){ const st=String(r['Status']||''); if(st==='Draft') re
 // All other PR -> by the pending-with USER's assigned department (falls back to row dept if the user is unmapped).
 function itemDivision(it){
   if(it.doc==='PO') return (it.stage==='Procurement'||it.stage==='Sent to Supplier')?'procurement':'finance';
-  if(it.stage==='Operations to Confirm') return (it.dept==='Home Maintenance Services'||it.dept==='FitOut Services')?'ops_hm':'ops_all';
+  if(it.stage==='Operations to Confirm'){
+    if(it.dept==='Home Maintenance Services'||it.dept==='FitOut Services') return 'ops_hm';
+    if(opsUserForDept(it.dept)) return 'ops_all';   // requisition dept has a named ops confirmer -> Operations (all-depts)
+    return 'procurement';                            // dept NOT in the ops-user table -> Procurement email, pending approver holds it
+  }
   return divForDept(it.udept||it.dept);
 }
 const STAGE_ORDER=[['PR','Procurement'],['PR','Operations to Confirm'],['PR','Dep Managers'],['PR','Finance'],['PR','Director'],['PR','CEO'],['PO','Procurement'],['PO','Finance'],['PO','Director'],['PO','CEO'],['PO','Sent to Supplier'],['PO','Pending Invoicing']];
@@ -178,9 +182,10 @@ async function buildXlsxBase64(fil, cfg){
     {header:'Value (AED)',key:'value',width:15},{header:'Age (days)',key:'age',width:11},{header:'Created',key:'created',width:13},
     {header:'Step date',key:'stepd',width:13},{header:'Title / Name',key:'title',width:34},{header:'Preparer / Linked PR',key:'prep',width:20}
   ];
-  fil.slice().sort((a,b2)=>(b2.age||0)-(a.age||0)).forEach(it=>{ const r=it.raw; let status,loc,pend,ven,created,stepd,title,prep;
-    if(it.doc!=='PO'){ status=String(r['Status']||''); loc=r['Location']; pend=r['Pending Approver/User']; ven=''; created=ymdStr(r['Created date']); stepd=ymdStr(r['Step date and time']); title=r['Name']; prep=r['Preparer']; }
-    else { status=(String(r['Approval status']||'')+' / '+String(r['Purchase order status']||'')).replace(/^ \/ | \/ $/g,''); loc=r['Location']; pend=r['Pending Approver/User']; ven=r['Vendor name']; created=ymdStr(r['Created date and time']); stepd=ymdStr(r['Step date and time']); title=''; prep=r['Purchase requisition']; }
+  fil.slice().sort((a,b2)=>(b2.age||0)-(a.age||0)).forEach(it=>{ const r=it.raw; let status,loc,ven,created,stepd,title,prep;
+    if(it.doc!=='PO'){ status=String(r['Status']||''); loc=r['Location']; ven=''; created=ymdStr(r['Created date']); stepd=ymdStr(r['Step date and time']); title=r['Name']; prep=r['Preparer']; }
+    else { status=(String(r['Approval status']||'')+' / '+String(r['Purchase order status']||'')).replace(/^ \/ | \/ $/g,''); loc=r['Location']; ven=r['Vendor name']; created=ymdStr(r['Created date and time']); stepd=ymdStr(r['Step date and time']); title=''; prep=r['Purchase requisition']; }
+    const pend=it.owner;  // computed owner: ops-user for ops-confirm, Created-by for Draft POs, approver otherwise
     ws.addRow({ref:it.ref,doc:it.typ,stage:it.stage,step:r['Step name'],status,dept:it.dept,loc,pend,vendor:ven,value:Math.round((it.value||0)*100)/100,age:(it.age==null?null:it.age),created,stepd,title,prep}); });
   const DIVCOL={procurement:'FF1D4ED8',finance:'FF16A34A',ops_hm:'FF0F766E',ops_all:'FF7C3AED'};
   const HEAD=DIVCOL[cfg&&cfg.key]||'FF14315E';
