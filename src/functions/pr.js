@@ -2,6 +2,11 @@ const { app } = require('@azure/functions');
 const { jwtVerify, createRemoteJWKSet } = require('jose');
 const STEP_MAP = require('../../stepMap.json');
 const PO_STEP_MAP = require('../../poStepMap.json');
+const {
+  groupPendingWorkItems,
+  latestCompletedWorkItems,
+  summarizePending
+} = require('../shared/workflow');
 
 // ---- Entra token validation: the dashboard sends the signed-in user's token ----
 const TENANT = process.env.TENANT_ID;
@@ -20,15 +25,25 @@ async function requireUser(request) {
 // ---- simple in-memory cache (per warm instance) ----
 const CACHE_MS = 3 * 60 * 1000;
 const cache = {}; // { pr: {at, data}, po: {...} }
+let ifahrFieldsAvailable = null;
 
 // ---- CORS ----
-function cors() {
-  const origin = process.env.ALLOWED_ORIGIN || '*';
+function cors(request) {
+  const requestOrigin = (request.headers.get && request.headers.get('origin')) || '';
+  const configured = String(process.env.ALLOWED_ORIGIN || '')
+    .split(',').map(value => value.trim()).filter(Boolean);
+  const allowed = new Set([
+    ...configured,
+    'https://strive-services-group.github.io',
+    'https://chandansah605.github.io'
+  ]);
+  const origin = allowed.has(requestOrigin) ? requestOrigin : (configured[0] || 'https://strive-services-group.github.io');
   return {
     'Access-Control-Allow-Origin': origin,
     'Access-Control-Allow-Methods': 'GET, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-    'Cache-Control': 'no-store'
+    'Cache-Control': 'no-store',
+    'Vary': 'Origin'
   };
 }
 
@@ -92,20 +107,31 @@ async function buildPR() {
   // this $select fails and we fall back to the workflow-work-item reconstruction below.
   const BASE_HDR = "RequisitionNumber,RequisitionName,RequisitionStatus,DefaultProjectId,IFAHRQuotationReference,PreparerPersonnelNumber,RequisitionPurpose,DefaultRequestedDate";
   const IFAHR_HDR = BASE_HDR + ",IFAHRPendingStep,IFAHRPendngDateTime,IFAHRPendingUser,IFAHRPRWFAcceptedBy,IFAHRDepartment,IFAHRLocation,IFAHRContract,IFAHRSubmissionStatus,IFAHRPurchRFQCaseId";
-  let headers, ifahrLive = false;
-  try {
-    headers = await odataAll(token, "PurchaseRequisitionHeaders?$select=" + IFAHR_HDR);
-    ifahrLive = true;
-  } catch (e) {
-    headers = await odataAll(token, "PurchaseRequisitionHeaders?$select=" + BASE_HDR);
-  }
+  const headersPromise = (async () => {
+    if (ifahrFieldsAvailable !== false) {
+      try {
+        const rows = await odataAll(token, "PurchaseRequisitionHeaders?$select=" + IFAHR_HDR);
+        ifahrFieldsAvailable = true;
+        return { rows, ifahrLive: true };
+      } catch (e) {
+        ifahrFieldsAvailable = false;
+      }
+    }
+    return {
+      rows: await odataAll(token, "PurchaseRequisitionHeaders?$select=" + BASE_HDR),
+      ifahrLive: false
+    };
+  })();
 
-  const lines = await odataAll(token,
-    "PurchaseRequisitionLines?$select=RequisitionNumber,LineAmount,DefaultLedgerDimensionDisplayValue");
-
-  // real Created / Submitted dates (header entity doesn't expose them cleanly)
-  const bi = await odataAll(token,
-    "PurchReqTableBiEntities?$select=PurchReqId,TransDate,SubmittedDateTime");
+  const [headerResult, lines, bi, wi] = await Promise.all([
+    headersPromise,
+    odataAll(token, "PurchaseRequisitionLines?$select=RequisitionNumber,LineAmount,DefaultLedgerDimensionDisplayValue"),
+    // Real Created / Submitted dates (header entity doesn't expose them cleanly).
+    odataAll(token, "PurchReqTableBiEntities?$select=PurchReqId,TransDate,SubmittedDateTime"),
+    odataAll(token, "WorkflowWorkItems?$filter=MenuItemName eq 'PurchReqTable'&$select=Subject,ElementId,Status,UserId,DueDateTime")
+  ]);
+  const headers = headerResult.rows;
+  const ifahrLive = headerResult.ifahrLive;
   const biMap = {};
   for (const b of bi) { if (b.PurchReqId) biMap[b.PurchReqId] = b; }
 
@@ -117,28 +143,14 @@ async function buildPR() {
     lineAgg[k].total += num(l.LineAmount);
   }
 
-  const wi = await odataAll(token,
-    "WorkflowWorkItems?$filter=MenuItemName eq 'PurchReqTable'&$select=Subject,ElementId,Status,UserId,DueDateTime");
-
-  const current = {}, lastDone = {};
-  for (const w of wi) {
-    const k = prKey(w.Subject);
-    if (!k) continue;
-    if (w.Status === 'Pending') {
-      const prev = current[k];
-      if (!prev || new Date(w.DueDateTime) > new Date(prev.DueDateTime)) current[k] = w;
-    } else if (w.Status === 'Completed') {
-      const prev = lastDone[k];
-      if (!prev || new Date(w.DueDateTime) > new Date(prev.DueDateTime)) lastDone[k] = w;
-    }
-  }
+  const current = groupPendingWorkItems(wi, prKey, STEP_MAP);
+  const lastDone = latestCompletedWorkItems(wi, prKey);
 
   const rows = headers.map(h => {
     const k = h.RequisitionNumber;
     const agg = lineAgg[k];
     const line = agg ? agg.first : {};
-    const w = current[k];
-    const elementId = w ? w.ElementId : null;
+    const pending = summarizePending(current[k], ifahrLive ? h.IFAHRPendingUser : null);
     const dim = parseDim(line.DefaultLedgerDimensionDisplayValue);
     return {
       purchaseRequisition: k,
@@ -147,6 +159,7 @@ async function buildPR() {
       preparer: h.PreparerPersonnelNumber || null,
       projectId: h.DefaultProjectId || null,
       status: h.RequisitionStatus || null,
+      requisitionPurpose: h.RequisitionPurpose || null,
       createdDate: (biMap[k] && biMap[k].TransDate) || h.DefaultRequestedDate || null,
       submittedDate: (biMap[k] && biMap[k].SubmittedDateTime) || null,
       acceptedByAssignTo: (ifahrLive && h.IFAHRPRWFAcceptedBy) || (lastDone[k] ? lastDone[k].UserId : null),
@@ -156,10 +169,10 @@ async function buildPR() {
       submissionStatus: ifahrLive ? (h.IFAHRSubmissionStatus || null) : null,
       rfqCase: ifahrLive ? (h.IFAHRPurchRFQCaseId || null) : null,
       totalAmount: agg ? Math.round(agg.total * 100) / 100 : 0,
-      pendingApprover: (ifahrLive && h.IFAHRPendingUser) || (w ? w.UserId : null),
-      stepName: (ifahrLive && h.IFAHRPendingStep) || (elementId ? (STEP_MAP[elementId] || null) : null),
-      stepDateTime: (ifahrLive && h.IFAHRPendngDateTime) || (w ? w.DueDateTime : null),
-      stepElementId: elementId,
+      ...pending,
+      stepName: (ifahrLive && h.IFAHRPendingStep) || pending.stepName,
+      // DueDateTime is a target/due date, not when the step was entered.
+      stepDateTime: (ifahrLive && h.IFAHRPendngDateTime) || null,
       ledgerDimensionRaw: line.DefaultLedgerDimensionDisplayValue || null
     };
   });
@@ -171,11 +184,12 @@ async function buildPR() {
 async function buildPO() {
   const token = await getToken();
 
-  const headers = await odataAll(token,
-    "PurchaseOrderHeadersV2?$select=PurchaseOrderNumber,OrderVendorAccountNumber,PurchaseOrderName,CurrencyCode,PurchaseOrderStatus,DocumentApprovalStatus,ProjectId,RequestedDeliveryDate");
-
-  const lines = await odataAll(token,
-    "PurchaseOrderLinesV2?$select=PurchaseOrderNumber,LineAmount,DefaultLedgerDimensionDisplayValue");
+  const [headers, lines, vendors, wi] = await Promise.all([
+    odataAll(token, "PurchaseOrderHeadersV2?$select=PurchaseOrderNumber,OrderVendorAccountNumber,PurchaseOrderName,CurrencyCode,PurchaseOrderStatus,DocumentApprovalStatus,ProjectId,RequestedDeliveryDate"),
+    odataAll(token, "PurchaseOrderLinesV2?$select=PurchaseOrderNumber,LineAmount,DefaultLedgerDimensionDisplayValue"),
+    odataAll(token, "VendorsV2?$select=VendorAccountNumber,VendorOrganizationName"),
+    odataAll(token, "WorkflowWorkItems?$filter=MenuItemName eq 'PurchTable'&$select=Subject,ElementId,Status,UserId,DueDateTime")
+  ]);
 
   const lineAgg = {};
   for (const l of lines) {
@@ -185,28 +199,16 @@ async function buildPO() {
     lineAgg[k].total += num(l.LineAmount);
   }
 
-  const vendors = await odataAll(token,
-    "VendorsV2?$select=VendorAccountNumber,VendorOrganizationName");
   const vname = {};
   for (const v of vendors) { if (v.VendorAccountNumber) vname[v.VendorAccountNumber] = v.VendorOrganizationName || ''; }
 
-  const wi = await odataAll(token,
-    "WorkflowWorkItems?$filter=MenuItemName eq 'PurchTable'&$select=Subject,ElementId,Status,UserId,DueDateTime");
-  const current = {};
-  for (const w of wi) {
-    if (w.Status !== 'Pending') continue;
-    const k = poKey(w.Subject);
-    if (!k) continue;
-    const prev = current[k];
-    if (!prev || new Date(w.DueDateTime) > new Date(prev.DueDateTime)) current[k] = w;
-  }
+  const current = groupPendingWorkItems(wi, poKey, PO_STEP_MAP);
 
   const rows = headers.map(h => {
     const k = h.PurchaseOrderNumber;
     const agg = lineAgg[k];
     const line = agg ? agg.first : {};
-    const w = current[k];
-    const elementId = w ? w.ElementId : null;
+    const pending = summarizePending(current[k]);
     const dim = parseDim(line.DefaultLedgerDimensionDisplayValue);
     return {
       purchaseOrder: k,
@@ -222,10 +224,9 @@ async function buildPO() {
       location: dim.location,
       contract: dim.contract,
       totalAmount: agg ? Math.round(agg.total * 100) / 100 : 0,
-      pendingApprover: w ? w.UserId : null,
-      stepName: elementId ? (PO_STEP_MAP[elementId] || null) : null,
-      stepDateTime: w ? w.DueDateTime : null,
-      stepElementId: elementId,
+      ...pending,
+      // F&O does not expose the step-entry timestamp on this entity.
+      stepDateTime: null,
       ledgerDimensionRaw: line.DefaultLedgerDimensionDisplayValue || null
     };
   });
@@ -234,7 +235,7 @@ async function buildPO() {
 }
 
 async function serve(kind, request, context) {
-  const headers = { 'Content-Type': 'application/json', ...cors() };
+  const headers = { 'Content-Type': 'application/json', ...cors(request) };
   if (request.method === 'OPTIONS') return { status: 204, headers };
 
   // Access is gated by the ?code= function key (authLevel:'function').
