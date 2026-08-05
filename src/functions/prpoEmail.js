@@ -103,7 +103,7 @@ function SH(t,s){ return '<div style="font-family:'+FONT+';font-weight:800;font-
 
 /* ---- finding builders ---- */
 function grpBy(arr,key){ const g={}; for(const it of arr){ const k=key(it); (g[k]=g[k]||[]).push(it); } return g; }
-function dchip(doc){ const c=doc==='PO'?'#0891b2':'#2563eb'; return ' <span style="font-family:'+FONT+';font-size:9px;font-weight:800;letter-spacing:.3px;color:#ffffff;background:'+c+';padding:1px 5px;border-radius:4px;vertical-align:middle;">('+doc+')</span>'; }
+function dchip(doc){ const c=doc==='PO'?'#0891b2':'#2563eb'; return ' <b style="font-family:'+FONT+';font-size:11px;color:'+c+';">('+doc+')</b>'; }
 function f_owners(its,L,col,title,label){
   const persons=its.filter(it=>it.ppend!==false&&it.stage!=='Sent to Supplier'&&it.stage!=='Pending Invoicing');
   const g={}; for(const it of persons){ const key=String(it.owner==null?'':it.owner).trim().toLowerCase()+'|'+it.doc; const e=g[key]||(g[key]={n:0,ages:[],val:0,br:0,bk:{},disp:{},doc:it.doc}); e.n++; e.val+=it.value; e.bk[it.stage]=(e.bk[it.stage]||0)+1; e.disp[it.owner]=(e.disp[it.owner]||0)+1; if(it.age!=null){e.ages.push(it.age); if(it.age>7)e.br++;} }
