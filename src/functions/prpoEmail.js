@@ -68,13 +68,17 @@ function prPendingWith(r){ const st=String(r['Status']||''); if(st==='Draft') re
 //   department (row Department col), so it lands in the Operations sheets regardless of which procurement user holds it.
 // All other PR -> by the pending-with USER's assigned department (falls back to row dept if the user is unmapped).
 function itemDivision(it){
-  if(it.doc==='PO') return (it.stage==='Procurement'||it.stage==='Sent to Supplier')?'procurement':'finance';
-  if(it.stage==='Operations to Confirm'){
-    if(it.dept==='Home Maintenance Services'||it.dept==='FitOut Services') return 'ops_hm';
-    if(opsUserForDept(it.dept)) return 'ops_all';   // requisition dept has a named ops confirmer -> Operations (all-depts)
-    return 'procurement';                            // dept NOT in the ops-user table -> Procurement email, pending approver holds it
+  if(it.doc==='PO'){
+    if(it.stage==='Sent to Supplier') return 'procurement';   // vendor-side -> by bucket
+    if(it.stage==='Pending Invoicing') return 'finance';      // vendor-side -> by bucket
+    if(it.ppend) return (deptForUser(it.owner)==='Accounts & Tax')?'finance':'procurement'; // pending approval -> by the person holding it
+    return (it.stage==='Procurement')?'procurement':'finance'; // settled -> by bucket
   }
-  return divForDept(it.udept||it.dept);
+  // PR -> by workflow step/bucket (NOT by who holds it)
+  if(it.stage==='Procurement') return 'procurement';
+  if(it.stage==='Finance'||it.stage==='Director'||it.stage==='CEO') return 'finance';
+  // Operations to Confirm + Dep Managers -> Operations, split by REQUISITION department (unmapped dept -> All-Depts)
+  return (it.dept==='Home Maintenance Services'||it.dept==='FitOut Services')?'ops_hm':'ops_all';
 }
 const STAGE_ORDER=[['PR','Procurement'],['PR','Operations to Confirm'],['PR','Dep Managers'],['PR','Finance'],['PR','Director'],['PR','CEO'],['PO','Procurement'],['PO','Finance'],['PO','Director'],['PO','CEO'],['PO','Sent to Supplier'],['PO','Pending Invoicing']];
 
