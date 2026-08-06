@@ -62,12 +62,18 @@ function divForDept(d){ return DEPT_DIV[d]||'ops_all'; }
 // NOT the procurement approver sitting in the F&O user columns. Map requisition department -> responsible ops user.
 const DEPT_OPSUSER={"Building Services":"dinesh.laxman","Landscaping Services":"dinesh.laxman","Contracted Cleaning Services":"Gokul.Krishna","Security Services":"pramod.c","FitOut Services":"Shakir Ameer Bakhsh","Home Maintenance Services":"shijil.c"};
 function opsUserForDept(d){ return DEPT_OPSUSER[String(d==null?'':d).trim()]||''; }
+// The F&O step name is unreliable for the finance chain, so the Finance/Director/CEO bucket is reconstructed from
+// WHO holds the item. roleOf: Accounts & Tax approver -> 'Finance' (ayman.g -> 'Director', Patrick.Smith -> 'CEO'),
+// procurement user -> 'Procurement', anyone else (operations) -> '' (falls through to the operations split).
+function roleOf(u){ const d=deptForUser(u), ul=_norm(u); if(d==='Accounts & Tax'){ if(ul==='ayman.g') return 'Director'; if(ul==='patrick.smith') return 'CEO'; return 'Finance'; } if(d==='Procurement') return 'Procurement'; return ''; }
+function opsDivFor(reqdept){ return (reqdept==='Home Maintenance Services'||reqdept==='FitOut Services')?'ops_hm':'ops_all'; }
 function prPendingWith(r){ const st=String(r['Status']||''); if(st==='Draft') return String(r['Preparer']||'').trim(); if(st==='Approved') return String(r['Accepted By/Assign To']||'').trim(); return String(r['Pending Approver/User']||'').trim(); }
 // Routing: PO -> functional home (Sent-to-Supplier/Procurement->procurement, else finance).
 // PR "Operations to Confirm" bucket (Unit-price-updated / Quotation-shared-to-Ops steps) -> by the REQUISITION's own
 //   department (row Department col), so it lands in the Operations sheets regardless of which procurement user holds it.
 // All other PR -> by the pending-with USER's assigned department (falls back to row dept if the user is unmapped).
-function itemDivision(it){
+function itemDivision(it){ return it.div; }  // stage(bucket) + div are reconstructed in buildItems (see below)
+function _unused_itemDivision(it){
   if(it.doc==='PO'){
     if(it.stage==='Sent to Supplier') return 'procurement';   // vendor-side -> by bucket
     if(it.stage==='Pending Invoicing') return 'finance';      // vendor-side -> by bucket
@@ -84,11 +90,24 @@ const STAGE_ORDER=[['PR','Procurement'],['PR','Operations to Confirm'],['PR','De
 
 function buildItems(prRows, poRows){
   const items=[];
-  for(const r of prRows){ if(!prLive(r)) continue; const st=prHb(PR_MAP[r['Step name']]); const pw=prPendingWith(r); const rowdept=String(r['Department']||'').trim(); const udept=deptForUser(pw); const owner=((st==='Operations to Confirm'?(opsUserForDept(rowdept)||pw):pw)||'(unassigned)'); items.push({ref:r['Purchase requisition'],doc:'PR',typ:String(r['Purchase requisition']||'').startsWith('CPR')?'CPR':'PR',stage:st,age:prAge(r),owner:owner,dept:rowdept,udept:udept,value:amt(r),vendor:'',ppend:true,raw:r}); }
-  // PO owner + "genuinely pending a person?" flag. Bucket cards keep the dashboard logic; the pending-with analysis
-  // only counts a PO when it is actually awaiting a person: In review -> Pending Approver/User, Draft -> Created by.
-  // Confirmed/Approved keep their bucket (per dashboard) but are NOT pending anyone (ppend=false). Vendor buckets -> vendor.
-  for(const r of poRows){ const bk=poBucket(r); if(!bk) continue; const ven=String(r['Vendor name']||'-').trim(); const poStat=String(r['Approval status']||''); const createdBy=String(r['Created by']||r['Created By']||'').trim(); const poPend=String(r['Pending Approver/User']||'').trim(); const isVenBk=(bk==='Sent to Supplier'||bk==='Pending Invoicing'); let own,ppend; if(isVenBk){ own=ven; ppend=false; } else if(poStat==='In review'){ own=poPend||'(unassigned)'; ppend=true; } else if(poStat==='Draft'){ own=createdBy||'(unassigned)'; ppend=true; } else { own=poPend||'(unassigned)'; ppend=false; } items.push({ref:r['Purchase order'],doc:'PO',typ:'PO',stage:bk,age:poAge(r),owner:own,dept:String(r['Department']||'').trim(),value:amt(r),vendor:ven,ppend:ppend,raw:r}); }
+  for(const r of prRows){ if(!prLive(r)) continue; const hb=prHb(PR_MAP[r['Step name']]); const rowdept=String(r['Department']||'').trim(); const pw0=prPendingWith(r);
+    const owner=((hb==='Operations to Confirm'?(opsUserForDept(rowdept)||pw0):pw0)||'(unassigned)');
+    let stage,div;
+    if(hb==='Procurement'){ stage='Procurement'; div='procurement'; }               // procurement is processing -> Procurement (step reliable)
+    else if(hb==='Operations to Confirm'||hb==='Dep Managers'){ stage=hb; div=opsDivFor(rowdept); }  // operations -> by requisition dept
+    else { const rl=roleOf(owner);                                                   // Finance/Director/CEO step -> reconstruct from who holds it
+      if(rl==='Finance'||rl==='Director'||rl==='CEO'){ stage=rl; div='finance'; }
+      else if(rl==='Procurement'){ stage='Procurement'; div='procurement'; }
+      else { stage='Dep Managers'; div=opsDivFor(rowdept); } }
+    items.push({ref:r['Purchase requisition'],doc:'PR',typ:String(r['Purchase requisition']||'').startsWith('CPR')?'CPR':'PR',stage:stage,div:div,age:prAge(r),owner:owner,dept:rowdept,value:amt(r),vendor:'',ppend:true,raw:r}); }
+  // PO: owner + "genuinely pending a person?" flag (In review -> Pending Approver/User, Draft -> Created by; Confirmed/Approved not pending).
+  // Vendor stages (Sent-to-Supplier/Pending-Invoicing) route by bucket; every other PO's bucket+division is reconstructed from the holder's role.
+  for(const r of poRows){ const bk=poBucket(r); if(!bk) continue; const ven=String(r['Vendor name']||'-').trim(); const poStat=String(r['Approval status']||''); const createdBy=String(r['Created by']||r['Created By']||'').trim(); const poPend=String(r['Pending Approver/User']||'').trim(); const isVenBk=(bk==='Sent to Supplier'||bk==='Pending Invoicing'); let own,ppend; if(isVenBk){ own=ven; ppend=false; } else if(poStat==='In review'){ own=poPend||'(unassigned)'; ppend=true; } else if(poStat==='Draft'){ own=createdBy||'(unassigned)'; ppend=true; } else { own=poPend||'(unassigned)'; ppend=false; }
+    let stage,div;
+    if(bk==='Sent to Supplier'){ stage=bk; div='procurement'; }
+    else if(bk==='Pending Invoicing'){ stage=bk; div='finance'; }
+    else { const rl=roleOf(own); if(rl==='Finance'||rl==='Director'||rl==='CEO'){ stage=rl; div='finance'; } else if(rl==='Procurement'){ stage='Procurement'; div='procurement'; } else { stage='Procurement'; div='procurement'; } }
+    items.push({ref:r['Purchase order'],doc:'PO',typ:'PO',stage:stage,div:div,age:poAge(r),owner:own,dept:String(r['Department']||'').trim(),value:amt(r),vendor:ven,ppend:ppend,raw:r}); }
   return items;
 }
 
