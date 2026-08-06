@@ -78,4 +78,38 @@ jobs:
           app-name: 'pr-po-dashboard-proxy'
           slot-name: 'Production'
           package: ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
-          
+
+      - name: Verify live PR and PO approval feeds
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          const base = 'https://pr-po-dashboard-proxy-b4budzexh7eveved.uaenorth-01.azurewebsites.net';
+
+          async function verify(kind) {
+            const response = await fetch(`${base}/api/${kind}?smoke=${Date.now()}`, {
+              headers: { Accept: 'application/json' },
+              signal: AbortSignal.timeout(180000)
+            });
+            if (!response.ok) throw new Error(`${kind.toUpperCase()} returned HTTP ${response.status}`);
+
+            const data = await response.json();
+            if (data.type !== kind || !Array.isArray(data.rows) || data.count !== data.rows.length || !data.generatedAt) {
+              throw new Error(`${kind.toUpperCase()} returned an invalid live-data contract`);
+            }
+
+            const invalidApprovers = data.rows.filter(row =>
+              row.pendingApprovers != null && !Array.isArray(row.pendingApprovers)
+            );
+            if (invalidApprovers.length) {
+              throw new Error(`${kind.toUpperCase()} returned non-array pendingApprovers`);
+            }
+
+            const parallelRows = data.rows.filter(row =>
+              Array.isArray(row.pendingApprovers) && row.pendingApprovers.length > 1
+            ).length;
+            console.log(JSON.stringify({ kind, count: data.count, generatedAt: data.generatedAt, parallelRows }));
+          }
+
+          await verify('pr');
+          await verify('po');
+          NODE
