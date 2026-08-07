@@ -310,7 +310,7 @@ async function runWeeklyBuckets(context, opts) {
 
 /* ================= triggers ================= */
 // Sunday 18:00 UTC = 22:00 Dubai — end of the ISO week, so Monday the dashboard shows it as "Last Week".
-app.timer('buckets-weekly', {
+app.timer('buckets-weekly-run', {
   schedule: '0 0 18 * * 0',
   handler: async (timer, context) => {
     try {
