@@ -32,8 +32,8 @@ const PR_MAP = {"Handyman Services_Manager":"Dep Managers","Building Services_As
 const PROC = new Set(["PR In Review","RFQ to suppliers","Qt received & Logged","OP confirms material","Procurement (in process)"]);
 const OPS = new Set(["Qt Shared to Op","Unit Price Updated"]);
 const PO_MAP = {"Advance payment request submitted (if applicable)":"Procurement","Procurement Manager":"Procurement","Accounting Manager":"Finance","Finance and Accounts Director":"Director","CEO":"CEO","LPO sent/shared with supplier":"Sent to Supplier"};
-const COLOR = {'Procurement':'#3b82f6','Operations to Confirm':'#14b8a6','Dep Managers':'#8b5cf6','Finance':'#22c55e','Director':'#ec4899','CEO':'#f59e0b','Sent to Supplier':'#a855f7','Pending Invoicing':'#f97316'};
-const GRAD = {'Procurement':'#eff5ff','Operations to Confirm':'#ebfbf7','Dep Managers':'#f4f1fe','Finance':'#eefbf3','Director':'#fdeff7','CEO':'#fff9ec','Sent to Supplier':'#f9f2ff','Pending Invoicing':'#fff4e8'};
+const COLOR = {'Procurement':'#3b82f6','Operations to Confirm':'#14b8a6','Dep Managers':'#8b5cf6','Finance':'#22c55e','Director':'#ec4899','CEO':'#f59e0b','Sent to Supplier':'#a855f7','Pending Invoicing':'#f97316','Re-Assigned/Rejected':'#dc2626'};
+const GRAD = {'Procurement':'#eff5ff','Operations to Confirm':'#ebfbf7','Dep Managers':'#f4f1fe','Finance':'#eefbf3','Director':'#fdeff7','CEO':'#fff9ec','Sent to Supplier':'#f9f2ff','Pending Invoicing':'#fff4e8','Re-Assigned/Rejected':'#fef2f2'};
 const TYCOL = {'PR':'#2563eb','CPR':'#7c3aed','PO':'#0891b2'};
 
 /* ---- helpers ---- */
@@ -86,19 +86,20 @@ function _unused_itemDivision(it){
   // Operations to Confirm + Dep Managers -> Operations, split by REQUISITION department (unmapped dept -> All-Depts)
   return (it.dept==='Home Maintenance Services'||it.dept==='FitOut Services')?'ops_hm':'ops_all';
 }
-const STAGE_ORDER=[['PR','Procurement'],['PR','Operations to Confirm'],['PR','Dep Managers'],['PR','Finance'],['PR','Director'],['PR','CEO'],['PO','Procurement'],['PO','Finance'],['PO','Director'],['PO','CEO'],['PO','Sent to Supplier'],['PO','Pending Invoicing']];
+const STAGE_ORDER=[['PR','Re-Assigned/Rejected'],['PR','Procurement'],['PR','Operations to Confirm'],['PR','Dep Managers'],['PR','Finance'],['PR','Director'],['PR','CEO'],['PO','Procurement'],['PO','Finance'],['PO','Director'],['PO','CEO'],['PO','Sent to Supplier'],['PO','Pending Invoicing']];
 
 function buildItems(prRows, poRows){
   const items=[];
   for(const r of prRows){ if(!prLive(r)) continue; const hb=prHb(PR_MAP[r['Step name']]); const rowdept=String(r['Department']||'').trim(); const pw0=prPendingWith(r);
     const owner=((hb==='Operations to Confirm'?(opsUserForDept(rowdept)||pw0):pw0)||'(unassigned)');
-    let stage,div;
-    if(hb==='Procurement'){ stage='Procurement'; div='procurement'; }               // procurement is processing -> Procurement (step reliable)
-    else if(hb==='Operations to Confirm'||hb==='Dep Managers'){ stage=hb; div=opsDivFor(rowdept); }  // operations -> by requisition dept
-    else { const rl=roleOf(owner);                                                   // Finance/Director/CEO step -> reconstruct from who holds it
-      if(rl==='Finance'||rl==='Director'||rl==='CEO'){ stage=rl; div='finance'; }
-      else if(rl==='Procurement'){ stage='Procurement'; div='procurement'; }
-      else { stage='Dep Managers'; div=opsDivFor(rowdept); } }
+    // "All game is with the pending approver": route by roleOf(owner). Where the step's home disagrees with the
+    // approver (a bounced-back item) it lands in the "Re-Assigned/Rejected" bucket of the approver's email:
+    //   - Procurement step held by an operations person  -> Re-Assigned/Rejected, Operations email
+    //   - Operations-to-confirm step held by procurement  -> Re-Assigned/Rejected, Procurement email
+    const rl=roleOf(owner); let stage,div;
+    if(rl==='Finance'||rl==='Director'||rl==='CEO'){ stage=rl; div='finance'; }
+    else if(rl==='Procurement'){ div='procurement'; stage=(hb==='Operations to Confirm')?'Re-Assigned/Rejected':'Procurement'; }
+    else { div=opsDivFor(rowdept); stage=(hb==='Procurement')?'Re-Assigned/Rejected':(hb==='Operations to Confirm')?'Operations to Confirm':'Dep Managers'; }
     items.push({ref:r['Purchase requisition'],doc:'PR',typ:String(r['Purchase requisition']||'').startsWith('CPR')?'CPR':'PR',stage:stage,div:div,age:prAge(r),owner:owner,dept:rowdept,value:amt(r),vendor:'',ppend:true,raw:r}); }
   // PO: owner + "genuinely pending a person?" flag (In review -> Pending Approver/User, Draft -> Created by; Confirmed/Approved not pending).
   // Vendor stages (Sent-to-Supplier/Pending-Invoicing) route by bucket; every other PO's bucket+division is reconstructed from the holder's role.
