@@ -124,10 +124,11 @@ function cardrow2(pairs,agg){
   const divW=both?(2+2*G):0, gutW=G*(n-(both?2:1));
   const cw=Math.min(200,Math.floor((W-divW-gutW)/n));
   const cell=p=>'<td width="'+cw+'" valign="top" style="width:'+cw+'px;">'+card2(p[0],p[1],agg[p[0]+'|'+p[1]])+'</td>';
-  const gutter='<td width="'+G+'" style="width:'+G+'px;font-size:0;line-height:0;">&#160;</td>';
+  // Outlook Word engine ignores font-size:0 — use tiny-but-nonzero font/line-height so spacers keep their declared width.
+  const gutter='<td width="'+G+'" style="width:'+G+'px;font-size:6px;line-height:6px;mso-line-height-rule:exactly;">&#160;</td>';
   const seg=arr=>arr.map((p,i)=>cell(p)+(i<arr.length-1?gutter:'')).join('');
-  const divider=gutter+'<td width="2" bgcolor="#b9c5d6" style="width:2px;background:#b9c5d6;font-size:0;line-height:0;">&#160;</td>'+gutter;
-  return '<table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:separate;"><tr>'+seg(pr)+(both?divider:'')+seg(po)+'</tr></table><div style="font-size:0;line-height:0;height:'+G+'px;">&#160;</div>';
+  const divider=gutter+'<td width="2" bgcolor="#b9c5d6" style="width:2px;background:#b9c5d6;font-size:2px;line-height:2px;mso-line-height-rule:exactly;">&#160;</td>'+gutter;
+  return '<table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:separate;"><tr>'+seg(pr)+(both?divider:'')+seg(po)+'</tr></table><div style="height:'+G+'px;font-size:'+G+'px;line-height:'+G+'px;">&#160;</div>';
 }
 function badge(L,col){ return '<span style="display:inline-block;width:24px;height:24px;line-height:24px;text-align:center;background:'+col+';color:#fff;font-family:'+FONT+';font-weight:800;font-size:12px;margin-right:9px;vertical-align:middle;">'+L+'</span>'; }
 function finding(L,col,title,right,narr,tbl){ const head='<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 7px;"><tr><td width="24" height="24" align="center" valign="middle" bgcolor="'+col+'" style="width:24px;height:24px;background:'+col+';font-family:'+FONT+';font-weight:800;font-size:12px;color:#ffffff;">'+L+'</td><td width="9" style="width:9px;">&#160;</td><td valign="middle" style="font-family:'+FONT+';font-weight:800;font-size:14px;color:'+NAVY+';">'+title+'</td>'+(right?'<td align="right" valign="middle" style="font-family:'+FONT+';font-size:11px;font-weight:700;color:#94a3b8;white-space:nowrap;padding-left:10px;">'+right+'</td>':'')+'</tr></table>'; const body='<div style="font-family:'+FONT+';font-size:12.5px;color:#3f4b5b;line-height:1.5;margin:0 0 '+(tbl?'8px':'2px')+';">'+narr+'</div>'+(tbl||''); return '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 14px;"><tr><td style="border:1px solid #e6ebf1;border-left:4px solid '+col+';background:#fff;padding:14px 16px;border-radius:10px;box-shadow:0 1px 3px rgba(16,24,40,0.07);">'+head+body+'</td></tr></table>'; }
@@ -135,7 +136,7 @@ function b(s){ return '<b style="color:'+NAVY+';">'+s+'</b>'; }
 function nm(u){ return '<span style="font-weight:700;color:'+NAVY+';">'+esc(u)+'</span>'; }
 function sv(t,col){ return '<span style="color:'+col+';font-weight:700;">'+t+'</span>'; }
 function agec(a){ a=Math.round(a||0); const col=a>30?'#b91c1c':(a>7?'#c2410c':'#16794a'); return '<span style="font-weight:700;color:'+col+';">'+a+'d</span>'; }
-function otable(cols,rows){ const th='color:#fff;font-family:'+FONT+';font-weight:800;font-size:10.5px;padding:8px 11px;white-space:nowrap;background:'+NAVY+';'; const head='<tr>'+cols.map(c=>'<th style="'+th+(c[2]==='r'?'text-align:right;':(c[2]==='c'?'text-align:center;':'text-align:left;'))+'width:'+c[1]+'px;">'+c[0]+'</th>').join('')+'</tr>'; let body=''; rows.forEach((cells,i)=>{ const bg=i%2===0?'#ffffff':'#f7f9fc'; const last=(i===rows.length-1); const td='padding:8px 11px;'+(last?'':'border-bottom:1px solid #eef1f6;')+'font-family:'+FONT+';font-size:11.5px;background:'+bg+';white-space:nowrap;'; body+='<tr>'+cells.map((cell,j)=>'<td style="'+td+(cols[j][2]==='r'?'text-align:right;':(cols[j][2]==='c'?'text-align:center;':''))+'">'+cell+'</td>').join('')+'</tr>'; }); return '<table width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;border-collapse:separate;border-spacing:0;background:#fff;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;">'+head+body+'</table>'; }
+function otable(cols,rows){ const th='color:#fff;font-family:'+FONT+';font-weight:800;font-size:10.5px;padding:8px 11px;white-space:nowrap;background:'+NAVY+';'; const head='<tr>'+cols.map(c=>'<th style="'+th+(c[2]==='r'?'text-align:right;':(c[2]==='c'?'text-align:center;':'text-align:left;'))+'width:'+c[1]+'px;">'+c[0]+'</th>').join('')+'</tr>'; let body=''; rows.forEach((cells,i)=>{ const bg=i%2===0?'#ffffff':'#f7f9fc'; const last=(i===rows.length-1); const td='padding:8px 11px;'+(last?'':'border-bottom:1px solid #eef1f6;')+'font-family:'+FONT+';font-size:11.5px;background:'+bg+';white-space:nowrap;'; body+='<tr>'+cells.map((cell,j)=>'<td style="'+td+(j>0?'border-left:1px solid #f1f4f8;':'')+(cols[j][2]==='r'?'text-align:right;':(cols[j][2]==='c'?'text-align:center;':''))+'">'+cell+'</td>').join('')+'</tr>'; }); return '<table width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;border-collapse:separate;border-spacing:0;background:#fff;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;">'+head+body+'</table>'; }
 function SH(t,s){ return '<div style="font-family:'+FONT+';font-weight:800;font-size:15px;color:'+NAVY+';margin:0 0 2px;">'+t+'</div>'+(s?'<div style="font-family:'+FONT+';font-size:11.5px;color:#7688a0;margin:0 0 9px;">'+s+'</div>':''); }
 
 /* ---- finding builders ---- */
@@ -249,13 +250,13 @@ function f_details(fil, cfg){
   const desc=it=> it.doc==='PO' ? (it.raw['Vendor name']||'-') : (it.raw['Name']||'-');
   const th='padding:7px 9px;font:700 10px '+HF+';color:#5A6578;text-transform:uppercase;background:#F4F6FB;';
   const head='<tr>'+[['Document','l'],['Description','l'],['Waiting on step','l'],['Pending with','l'],['Value','r'],['Age','r']].map(c=>'<td '+(c[1]==='r'?'align="right" ':'')+'style="'+th+'">'+c[0]+'</td>').join('')+'</tr>';
-  const body=rows.map(it=>{ const a=Math.round(it.age||0); const acol=a>30?'#B42318':(a>7?'#9A6700':'#1F7A33'); const td='padding:6px 9px;font:400 12px '+HF+';color:#1A2233;border-bottom:1px solid '+HBORD+';';
+  const body=rows.map(it=>{ const a=Math.round(it.age||0); const acol=a>30?'#B42318':(a>7?'#9A6700':'#1F7A33'); const td='padding:6px 9px;font:400 12px '+HF+';color:#1A2233;border-bottom:1px solid '+HBORD+';'; const tdl=td+'border-left:1px solid #f1f4f8;';
     return '<tr><td style="'+td+'font-weight:600;white-space:nowrap;">'+esc(it.ref)+'</td>'
-      +'<td style="'+td+'">'+esc(String(desc(it)).slice(0,46))+'</td>'
-      +'<td style="'+td+'color:'+HNAVY+';white-space:nowrap;">'+esc(String(it.raw['Step name']||'-').slice(0,28))+'</td>'
-      +'<td style="'+td+'font-weight:600;white-space:nowrap;">'+esc(String(it.owner||'-').slice(0,18))+'</td>'
-      +'<td align="right" style="'+td+'font-weight:600;white-space:nowrap;">AED '+money(it.value)+'</td>'
-      +'<td align="right" style="'+td+'font-weight:700;color:'+acol+';white-space:nowrap;">'+a+'d</td></tr>'; }).join('');
+      +'<td style="'+tdl+'">'+esc(String(desc(it)).slice(0,46))+'</td>'
+      +'<td style="'+tdl+'color:'+HNAVY+';white-space:nowrap;">'+esc(String(it.raw['Step name']||'-').slice(0,28))+'</td>'
+      +'<td style="'+tdl+'font-weight:600;white-space:nowrap;">'+esc(String(it.owner||'-').slice(0,18))+'</td>'
+      +'<td align="right" style="'+tdl+'font-weight:600;white-space:nowrap;">AED '+money(it.value)+'</td>'
+      +'<td align="right" style="'+tdl+'font-weight:700;color:'+acol+';white-space:nowrap;">'+a+'d</td></tr>'; }).join('');
   const more=fil.length>15?'<tr><td colspan="6" style="padding:7px 9px;font:400 11px '+HF+';color:#5A6578;background:#F9FAFC;">&#8230;and '+(fil.length-15)+' more &#8212; full list in the attached '+cfg.xlsx+'.</td></tr>':'';
   return '<div style="font:700 14px '+HF+';color:'+HNAVY+';margin:16px 0 2px;">Details &#8212; PR / PO list</div>'
     +'<div style="font:400 11px '+HF+';color:#5A6578;margin:0 0 10px;">Oldest first &#183; age = days at the current step.</div>'
