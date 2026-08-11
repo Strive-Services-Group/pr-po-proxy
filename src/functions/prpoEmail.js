@@ -7,7 +7,7 @@
  *   2. Finance              -> PRPO_FIN_MAIL_TO      (PR Finance/Director + PO Finance/Pending Invoicing)
  *   3. Operations HM+FitOut -> PRPO_OPSHM_MAIL_TO    (Ops to Confirm + Dep Managers, Home Maintenance + FitOut)
  *   4. Operations All       -> PRPO_OPSALL_MAIL_TO   (Ops to Confirm + Dep Managers, all other departments)
- * A division with no recipient env set is skipped. All counts use the dashboard live-pipeline logic.
+ * A division with no recipient env set is sk\ipped. All counts use the dashboard live-pipeline logic.
  *
  * HTTP test endpoints (authLevel: function, add &code=<your default host key>):
  *   ?division=procurement|finance|ops_hm|ops_all & format=html  -> preview that email (no send)
@@ -318,7 +318,7 @@ async function fetchXlsx(url){ const r=await fetch(url+(url.includes('?')?'&':'?
 async function loadItems(){ const [prRows,poRows]=await Promise.all([fetchXlsx(PR_URL),fetchXlsx(PO_URL)]); return buildItems(prRows,poRows); }
 
 /* ---- triggers ---- */
-app.timer('prpo-email-daily', { schedule:'0 0 7 * * *', handler:async(timer,context)=>{
+app.timer('prpo-email-daily', { schedule:'0 0 10 * * *', handler:async(timer,context)=>{
   const items=await loadItems();
   for(const cfg of DIVS){ try{ await sendDivision(buildDivision(cfg,items),context); }catch(e){ context.error('prpo '+cfg.key+' FAILED: '+e.message); } }
 }});
