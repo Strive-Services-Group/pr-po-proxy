@@ -479,7 +479,11 @@ async function fetchXlsx(url){ const r=await fetch(url+(url.includes('?')?'&':'?
 async function loadItems(){ const [prRows,poRows]=await Promise.all([fetchXlsx(PR_URL),fetchXlsx(PO_URL)]); return buildItems(prRows,poRows); }
 
 /* ---- triggers ---- */
-app.timer('prpo-email-daily', { schedule:'0 0 10 * * *', handler:async(timer,context)=>{
+// NCRONTAB runs in UTC: 06:00 UTC = 10:00 AM Dubai. Do NOT put the Dubai hour here.
+app.timer('prpo-email-daily', { schedule:'0 0 6 * * *', handler:async(timer,context)=>{
+  // Guard: Azure re-fires a "missed" timer after deploys/restarts. Only send in the 10:00–10:30 Dubai window.
+  const dxb=new Date(Date.now()+4*3600*1000); const hh=dxb.getUTCHours(), mm=dxb.getUTCMinutes();
+  if(hh!==10||mm>30){ context.log('prpo-email-daily: off-schedule fire at '+hh+':'+String(mm).padStart(2,'0')+' Dubai (restart catch-up) — skipped'); return; }
   const items=await loadItems();
   for(const cfg of DIVS){ if(cfg.send===false) continue; try{ await sendDivision(buildDivision(cfg,items),context); }catch(e){ context.error('prpo '+cfg.key+' FAILED: '+e.message); } }
   for(const p of groupByOwner(personalPool(items))){ try{ await sendPersonal(buildPersonal(p),context); }catch(e){ context.error('prpo personal '+p.user+' FAILED: '+e.message); } }
