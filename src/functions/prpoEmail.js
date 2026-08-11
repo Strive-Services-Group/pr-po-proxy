@@ -51,8 +51,8 @@ const PR_MAP = {"Handyman Services_Manager":"Dep Managers","Building Services_As
 const PROC = new Set(["PR In Review","RFQ to suppliers","Qt received & Logged","OP confirms material","Procurement (in process)"]);
 const OPS = new Set(["Qt Shared to Op","Unit Price Updated"]);
 const PO_MAP = {"Advance payment request submitted (if applicable)":"Procurement","Procurement Manager":"Procurement","Accounting Manager":"Finance","Finance and Accounts Director":"Director","CEO":"CEO","LPO sent/shared with supplier":"Sent to Supplier"};
-const COLOR = {'Procurement':'#3b82f6','Operations to Confirm':'#14b8a6','Dep Managers':'#8b5cf6','Finance':'#22c55e','Director':'#ec4899','CEO':'#f59e0b','Sent to Supplier':'#a855f7','Pending Invoicing':'#f97316','Re-Assigned/Rejected':'#dc2626','Pending Internal':'#14b8a6','Pending Client':'#6366f1'};
-const GRAD = {'Procurement':'#eff5ff','Operations to Confirm':'#ebfbf7','Dep Managers':'#f4f1fe','Finance':'#eefbf3','Director':'#fdeff7','CEO':'#fff9ec','Sent to Supplier':'#f9f2ff','Pending Invoicing':'#fff4e8','Re-Assigned/Rejected':'#fef2f2','Pending Internal':'#ebfbf7','Pending Client':'#eef2ff'};
+const COLOR = {'Procurement':'#3b82f6','Operations to Confirm':'#14b8a6','Dep Managers':'#8b5cf6','Finance':'#22c55e','Director':'#ec4899','CEO':'#f59e0b','Sent to Supplier':'#a855f7','Pending Invoicing':'#f97316','Re-Assigned/Rejected':'#dc2626','Pending Internal':'#14b8a6','Pending Client':'#6366f1','Confirmed Open Order':'#0891b2'};
+const GRAD = {'Procurement':'#eff5ff','Operations to Confirm':'#ebfbf7','Dep Managers':'#f4f1fe','Finance':'#eefbf3','Director':'#fdeff7','CEO':'#fff9ec','Sent to Supplier':'#f9f2ff','Pending Invoicing':'#fff4e8','Re-Assigned/Rejected':'#fef2f2','Pending Internal':'#ebfbf7','Pending Client':'#eef2ff','Confirmed Open Order':'#ecfeff'};
 const TYCOL = {'PR':'#2563eb','CPR':'#7c3aed','PO':'#0891b2'};
 
 /* ---- helpers ---- */
@@ -105,7 +105,7 @@ function _unused_itemDivision(it){
   // Operations to Confirm + Dep Managers -> Operations, split by REQUISITION department (unmapped dept -> All-Depts)
   return (it.dept==='Home Maintenance Services'||it.dept==='FitOut Services')?'ops_hm':'ops_all';
 }
-const STAGE_ORDER=[['PR','Re-Assigned/Rejected'],['PR','Procurement'],['PR','Operations to Confirm'],['PR','Dep Managers'],['PR','Finance'],['PR','Director'],['PR','CEO'],['PO','Procurement'],['PO','Finance'],['PO','Director'],['PO','CEO'],['PO','Sent to Supplier'],['PO','Pending Invoicing']];
+const STAGE_ORDER=[['PR','Re-Assigned/Rejected'],['PR','Procurement'],['PR','Operations to Confirm'],['PR','Dep Managers'],['PR','Finance'],['PR','Director'],['PR','CEO'],['PO','Procurement'],['PO','Finance'],['PO','Director'],['PO','CEO'],['PO','Confirmed Open Order'],['PO','Sent to Supplier'],['PO','Pending Invoicing']];
 
 function buildItems(prRows, poRows){
   const items=[];
@@ -194,7 +194,7 @@ function f_value(its,L,col){
 }
 function f_sla(its,L,col){
   const g={}; for(const it of its){ const e=g[it.stage]||(g[it.stage]={n:0,br:0,ages:[]}); e.n++; if(it.age!=null){e.ages.push(it.age); if(it.age>7)e.br++;} }
-  const order=['Procurement','Operations to Confirm','Dep Managers','Finance','Director','CEO','Sent to Supplier','Pending Invoicing'].filter(s=>g[s]);
+  const order=['Procurement','Operations to Confirm','Dep Managers','Finance','Director','CEO','Confirmed Open Order','Sent to Supplier','Pending Invoicing'].filter(s=>g[s]);
   const rows=order.map(s=>{ const e=g[s], pct=e.n?Math.round(100*e.br/e.n):0, pcol=pct>=70?'#b91c1c':(pct>=40?'#c2410c':'#16794a'); return [sv(s,COLOR[s]),String(e.n),sv(String(e.br),'#b91c1c'),sv(pct+'%',pcol),agec(avg(e.ages))]; });
   const tn=order.reduce((a,s)=>a+g[s].n,0), tb=order.reduce((a,s)=>a+g[s].br,0);
   return finding(L,col,'Stage SLA performance',(tn?Math.round(100*tb/tn):0)+'% breached',b(tb+' of '+tn)+' items are past the 7-day SLA ('+b((tn?Math.round(100*tb/tn):0)+'%')+'). Breach rate by stage below.',
@@ -210,12 +210,12 @@ function f_dept(its,L,col){
 
 /* ---- divisions ---- */
 const DIVS = [
- {key:'procurement', mail:'PRPO_PROC_MAIL_TO', defaultTo:'mohamed.ashraf@striveservicesgroup.com', xlsx:'PRPO_Suppliers_OpenOrders_list.xlsx', title:'Suppliers &amp; Open Orders',
+ {key:'procurement', mail:'PRPO_SUPPLIERS_MAIL_TO', defaultTo:'mohamed.ashraf@striveservicesgroup.com', xlsx:'PRPO_Suppliers_OpenOrders_list.xlsx', title:'Suppliers &amp; Open Orders',
   heading:'PR / PO Pipeline &#8212; Suppliers &amp; Open Orders', sub:'Sent-to-supplier POs plus confirmed POs with open-order status &#183; member queues arrive as individual action emails', accent:'#a855f7',
-  pr:[], po:['Procurement','Sent to Supplier'],
+  pr:[], po:['Confirmed Open Order','Sent to Supplier'], restage:'Confirmed Open Order',
   match:it=>it.doc==='PO'&&(it.stage==='Sent to Supplier'||(it.ppend===false&&String(it.raw['Approval status']||'')==='Confirmed'&&String(it.raw['Purchase order status']||'')==='Open order')),
   findings:[f=>f_vendor(f,'Sent to Supplier','A','#a855f7','Sent to Supplier &#8212; awaiting delivery / GRN','Chase the suppliers below for delivery, then move to invoicing.'), f=>f_value(f,'B','#2563eb'), f=>f_oldest(f,'C','#dc2626'), f=>f_sla(f,'D','#e11d48')]},
- {key:'invoicing', mail:'PRPO_INV_MAIL_TO', defaultTo:'muhammad.mustajab@striveservicesgroup.com;mehawil@striveservicesgroup.com;clita.m@striveservicesgroup.com', xlsx:'PRPO_PendingInvoicing_list.xlsx', title:'Pending Invoicing',
+ {key:'invoicing', mail:'PRPO_INV_MAIL_TO', defaultTo:'muhammad.mustajab@striveservicesgroup.com;mehawil@striveservicesgroup.com;clita.m@striveservicesgroup.com', cc:'ayman.ismail@striveservicesgroup.com;mohamed.ashraf@striveservicesgroup.com', xlsx:'PRPO_PendingInvoicing_list.xlsx', title:'Pending Invoicing',
   heading:'PR / PO Pipeline &#8212; Pending Invoicing', sub:'POs confirmed &amp; received &#8212; awaiting supplier invoice posting by Accounts', accent:'#f97316',
   pr:[], po:['Pending Invoicing'], match:it=>it.stage==='Pending Invoicing',
   findings:[f=>f_vendor(f,'Pending Invoicing','A','#f97316','Pending Invoicing &#8212; by vendor','Post the supplier invoices below to clear these from the ledger.'), f=>f_value(f,'B','#2563eb'), f=>f_oldest(f,'C','#dc2626')]},
@@ -228,7 +228,7 @@ const DIVS = [
   pr:['Operations to Confirm','Dep Managers'], po:[], xdepts:new Set(['Home Maintenance Services','FitOut Services']),
   findings:[f=>f_owners(f,'A','#8b5cf6','Pending with &#8212; who is holding the queue'), f=>f_dept(f,'B','#4f46e5'), f=>f_value(f,'C','#2563eb'), f=>f_oldest(f,'D','#dc2626'), f=>f_sla(f,'E','#e11d48')]},
 ];
-function filterDiv(items,cfg){ return items.filter(it=> cfg.match? cfg.match(it) : (itemDivision(it)===cfg.key&&(!cfg.keep||cfg.keep(it))) ); }
+function filterDiv(items,cfg){ let fil=items.filter(it=> cfg.match? cfg.match(it) : (itemDivision(it)===cfg.key&&(!cfg.keep||cfg.keep(it))) ); if(cfg.restage) fil=fil.map(it=>it.stage==='Sent to Supplier'?it:Object.assign({},it,{stage:cfg.restage})); return fil; }
 
 async function buildXlsxBase64(fil, cfg){
   const wb=new ExcelJS.Workbook(); wb.creator='Strive Services Group'; wb.created=new Date();
@@ -388,12 +388,14 @@ function buildPersonal(p){
               ['Oldest item',oldAge+'d',esc(old?String(old.ref):'-'),'#dc2626','#fef2f2',24],
               ['Past 7-day SLA',String(br),'of '+n+' item'+(n===1?'':'s'),'#f59e0b','#fff9ec',24]];
   const cardsHtml='<table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:separate;"><tr>'+defs.map((c,i)=>'<td width="'+cw+'" valign="top" style="width:'+cw+'px;">'+pcard(c[0],c[1],c[2],c[3],c[4],c[5])+'</td>'+(i<defs.length-1?gutter:'')).join('')+'</tr></table><div style="height:'+G+'px;font-size:'+G+'px;line-height:'+G+'px;">&#160;</div>';
-  // Stage cards row (uses the Internal/Client split)
-  const agg={}; for(const it of xfil){ const k=it.doc+'|'+it.stage; const x=agg[k]||(agg[k]={n:0,sum:0,c:0,amt:0}); x.n++; x.amt+=it.value; if(it.age!=null){x.sum+=it.age;x.c++;} }
-  const PORD=[['PR','Re-Assigned/Rejected'],['PR','Pending Internal'],['PR','Pending Client'],['PR','Procurement'],['PR','Dep Managers'],['PR','Finance'],['PO','Procurement'],['PO','Finance']];
-  const lp=PORD.filter(p=>agg[p[0]+'|'+p[1]]&&agg[p[0]+'|'+p[1]].n>0);
-  const cw2=Math.min(200,Math.floor((PW-G*Math.max(0,lp.length-1))/Math.max(1,lp.length)));
-  const stageCards=lp.length?'<table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:separate;"><tr>'+lp.map((p,i)=>'<td width="'+cw2+'" valign="top" style="width:'+cw2+'px;">'+card2(p[0],p[1],agg[p[0]+'|'+p[1]])+'</td>'+(i<lp.length-1?gutter:'')).join('')+'</tr></table><div style="height:'+G+'px;font-size:'+G+'px;line-height:'+G+'px;">&#160;</div>':'';
+  // Stage cards row — merged per STAGE (no PR/PO duplicates; doc split already shown on "Items pending").
+  // Rendered only when the person has MORE than one stage; a single redundant stage card is dropped.
+  const sagg={}; for(const it of xfil){ const x=sagg[it.stage]||(sagg[it.stage]={n:0,sum:0,c:0,amt:0}); x.n++; x.amt+=it.value; if(it.age!=null){x.sum+=it.age;x.c++;} }
+  const SORD=['Re-Assigned/Rejected','Pending Internal','Pending Client','Procurement','Dep Managers','Finance'];
+  const sl=SORD.filter(s=>sagg[s]).concat(Object.keys(sagg).filter(s=>!SORD.includes(s)));
+  const scard2=(bk,x)=>{ const a=x.c?(x.sum/x.c):0; return '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;background:'+(GRAD[bk]||'#f6f8fb')+';border:1px solid #e8ecf2;border-top:3px solid '+(COLOR[bk]||NAVY)+';border-radius:10px;box-shadow:0 1px 3px rgba(16,24,40,0.08);"><tr><td style="padding:11px 13px;"><div style="font-family:'+FONT+';font-size:9.5px;font-weight:800;color:#5b6b7f;text-transform:uppercase;">'+esc(bk)+'</div><div style="margin:6px 0 2px;white-space:nowrap;"><span style="font-family:'+FONT+';font-size:24px;font-weight:800;color:'+(COLOR[bk]||NAVY)+';">'+x.n+'</span><span style="font-family:'+FONT+';font-size:12px;font-weight:800;color:'+RED+';"> ('+a.toFixed(1)+'d)</span></div><div style="font-family:'+FONT+';font-size:11px;font-weight:700;color:'+TEAL+';">AED '+money(x.amt)+'</div></td></tr></table>'; };
+  const cw2=Math.min(200,Math.floor((PW-G*Math.max(0,sl.length-1))/Math.max(1,sl.length)));
+  const stageCards=sl.length>1?'<table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:separate;"><tr>'+sl.map((s,i)=>'<td width="'+cw2+'" valign="top" style="width:'+cw2+'px;">'+scard2(s,sagg[s])+'</td>'+(i<sl.length-1?gutter:'')).join('')+'</tr></table><div style="height:'+G+'px;font-size:'+G+'px;line-height:'+G+'px;">&#160;</div>':'';
   // Body table: Pending-Client items stay OUT (they are with the client) — cards + attached Excel only.
   const tfil=xfil.filter(it=>it.stage!=='Pending Client');
   const clientN=n-tfil.length;
@@ -448,16 +450,23 @@ async function sendPersonal(out, context){
 async function getToken(scopeBase){ const body=new URLSearchParams({client_id:process.env.CLIENT_ID,client_secret:process.env.CLIENT_SECRET,grant_type:'client_credentials',scope:scopeBase.replace(/\/+$/,'')+'/.default'}); const r=await fetch(`https://login.microsoftonline.com/${process.env.TENANT_ID}/oauth2/v2.0/token`,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body}); const j=await r.json(); if(!r.ok||!j.access_token) throw new Error('token '+r.status+' '+(j.error_description||j.error||'')); return j.access_token; }
 async function sendDivision(out, context){
   const from=process.env.PRPO_MAIL_FROM||process.env.MAIL_FROM;
-  const toList=(process.env[out.cfg.mail]||out.cfg.defaultTo||'').split(/[;,]/).map(s=>s.trim()).filter(Boolean);
   if(!from) throw new Error('MAIL_FROM / PRPO_MAIL_FROM not set');
-  if(!toList.length){ if(context) context.log('skip '+out.cfg.key+': '+out.cfg.mail+' not set'); return {sent:false,reason:'no recipients'}; }
+  // Division emails honor the SAME test mode as personal emails: everything goes to PRPO_TEST_MAIL_TO until PRPO_PERSONAL_TEST=0.
+  const test=(process.env.PRPO_PERSONAL_TEST||'1')!=='0';
+  let toList, ccList=[], subject=out.subject;
+  if(test){ const t=(process.env.PRPO_TEST_MAIL_TO||'').trim(); if(!t){ if(context) context.log('skip '+out.cfg.key+': test mode, PRPO_TEST_MAIL_TO not set'); return {sent:false,reason:'test mode: PRPO_TEST_MAIL_TO not set'}; } toList=[t]; subject='[TEST · '+out.cfg.key+'] '+out.subject; }
+  else { toList=(process.env[out.cfg.mail]||out.cfg.defaultTo||'').split(/[;,]/).map(s=>s.trim()).filter(Boolean);
+    ccList=(out.cfg.cc||'').split(/[;,]/).map(s=>s.trim()).filter(Boolean).filter(a=>!toList.some(t2=>t2.toLowerCase()===a.toLowerCase()));
+    if(!toList.length){ if(context) context.log('skip '+out.cfg.key+': '+out.cfg.mail+' not set'); return {sent:false,reason:'no recipients'}; } }
   const xlsxB64=await buildXlsxBase64(out.fil, out.cfg);
+  const msg={subject,body:{contentType:'HTML',content:out.html},toRecipients:toList.map(a=>({emailAddress:{address:a}})),attachments:[{'@odata.type':'#microsoft.graph.fileAttachment',name:out.cfg.xlsx,contentType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',contentBytes:xlsxB64}]};
+  if(ccList.length) msg.ccRecipients=ccList.map(a=>({emailAddress:{address:a}}));
   const token=await getToken('https://graph.microsoft.com');
   const r=await fetch('https://graph.microsoft.com/v1.0/users/'+encodeURIComponent(from)+'/sendMail',{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
-    body:JSON.stringify({message:{subject:out.subject,body:{contentType:'HTML',content:out.html},toRecipients:toList.map(a=>({emailAddress:{address:a}})),attachments:[{'@odata.type':'#microsoft.graph.fileAttachment',name:out.cfg.xlsx,contentType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',contentBytes:xlsxB64}]},saveToSentItems:true})});
+    body:JSON.stringify({message:msg,saveToSentItems:true})});
   if(r.status!==202){ const j=await r.json().catch(()=>({})); throw new Error('sendMail '+r.status+' '+JSON.stringify(j.error||j).slice(0,300)); }
-  if(context) context.log('sent '+out.cfg.key+' to '+toList.length+' recipients');
-  return {sent:true,to:toList.length};
+  if(context) context.log('sent '+out.cfg.key+' to '+toList.length+' recipients'+(test?' (TEST)':''));
+  return {sent:true,to:toList.length,test};
 }
 
 async function fetchXlsx(url){ const r=await fetch(url+(url.includes('?')?'&':'?')+'t='+Date.now()); if(!r.ok) throw new Error('fetch '+r.status+' '+url); return parseXlsx(Buffer.from(await r.arrayBuffer())); }
