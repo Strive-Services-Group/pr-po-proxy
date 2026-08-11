@@ -13,6 +13,14 @@
  *   REMOVED COMPLETELY per CK: Finance Director & CEO items, and unassigned/settled leftovers — they appear
  *   in NO email. The old finance/ops_hm/ops_all division emails are gone/retired (ops kept preview-only).
  *
+ * Optional: division-scoped emails (produce four separate emails with scoped analysis + Excel attachments).
+ * These are available as explicit/preview sends (ops_* remain preview-only) and use the dashboard live-pipeline logic:
+ *   1. Procurement          -> PRPO_PROC_MAIL_TO     (PR Procurement + PO Procurement + PO Sent to Supplier)
+ *   2. Finance              -> PRPO_FIN_MAIL_TO      (PR Finance/Director + PO Finance/Pending Invoicing)
+ *   3. Operations HM+FitOut -> PRPO_OPSHM_MAIL_TO    (Ops to Confirm + Dep Managers, Home Maintenance + FitOut)
+ *   4. Operations All       -> PRPO_OPSALL_MAIL_TO   (Ops to Confirm + Dep Managers, all other departments)
+ * A division with no recipient env set is skipped. All counts use the dashboard live-pipeline logic.
+ *
  * PERSONAL email addressing: embedded USER_EMAIL map, overridden/merged by env PRPO_USER_EMAILS (JSON
  *   {"dinesh.laxman":"a@x.com", ...}, keys case-insensitive). Unmapped user in live mode -> skipped + logged.
  * TEST MODE (default ON): PRPO_PERSONAL_TEST != '0' -> every personal email goes to PRPO_TEST_MAIL_TO
@@ -456,7 +464,7 @@ async function fetchXlsx(url){ const r=await fetch(url+(url.includes('?')?'&':'?
 async function loadItems(){ const [prRows,poRows]=await Promise.all([fetchXlsx(PR_URL),fetchXlsx(PO_URL)]); return buildItems(prRows,poRows); }
 
 /* ---- triggers ---- */
-app.timer('prpo-email-daily', { schedule:'0 0 6 * * *', handler:async(timer,context)=>{
+app.timer('prpo-email-daily', { schedule:'0 0 10 * * *', handler:async(timer,context)=>{
   const items=await loadItems();
   for(const cfg of DIVS){ if(cfg.send===false) continue; try{ await sendDivision(buildDivision(cfg,items),context); }catch(e){ context.error('prpo '+cfg.key+' FAILED: '+e.message); } }
   for(const p of groupByOwner(personalPool(items))){ try{ await sendPersonal(buildPersonal(p),context); }catch(e){ context.error('prpo personal '+p.user+' FAILED: '+e.message); } }
