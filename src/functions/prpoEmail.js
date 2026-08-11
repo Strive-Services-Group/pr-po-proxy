@@ -318,7 +318,7 @@ async function fetchXlsx(url){ const r=await fetch(url+(url.includes('?')?'&':'?
 async function loadItems(){ const [prRows,poRows]=await Promise.all([fetchXlsx(PR_URL),fetchXlsx(PO_URL)]); return buildItems(prRows,poRows); }
 
 /* ---- triggers ---- */
-app.timer('prpo-email-daily', { schedule:'0 0 6 * * *', handler:async(timer,context)=>{
+app.timer('prpo-email-daily', { schedule:'0 0 7 * * *', handler:async(timer,context)=>{
   const items=await loadItems();
   for(const cfg of DIVS){ try{ await sendDivision(buildDivision(cfg,items),context); }catch(e){ context.error('prpo '+cfg.key+' FAILED: '+e.message); } }
 }});
