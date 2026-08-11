@@ -1,23 +1,34 @@
 /*
  * PR / PO PIPELINE — FOUR DIVISION EMAILS, sent daily 10:00 AM Dubai.
  *
- * TIMER 0 0 6 * * * (06:00 UTC = 10:00 AM Dubai) sends four separate emails, each with a
- * scoped analysis and an Excel line-item list attached:
- *   1. Procurement          -> PRPO_PROC_MAIL_TO     (PR Procurement + PO Procurement + PO Sent to Supplier)
- *   2. Finance              -> PRPO_FIN_MAIL_TO      (PR Finance/Director + PO Finance/Pending Invoicing)
- *   3. Operations HM+FitOut -> PRPO_OPSHM_MAIL_TO    (Ops to Confirm + Dep Managers, Home Maintenance + FitOut)
- *   4. Operations All       -> PRPO_OPSALL_MAIL_TO   (Ops to Confirm + Dep Managers, all other departments)
- * A division with no recipient env set is skipped. All counts use the dashboard live-pipeline logic.
+ * TIMER 0 0 6 * * * (06:00 UTC = 10:00 AM Dubai). SEND MODEL (2026-08-11b per CK — personal-first):
+ *   1. PERSONAL action emails -> one PER PERSON with pending items (ops + finance + procurement members;
+ *      any stage except Director/CEO/Sent-to-Supplier/Pending-Invoicing). Line manager CC'd (USER_MANAGER).
+ *      Ops-confirm split "Pending Internal" vs "Pending Client" ('Unit prices updated in PR lines' = with
+ *      client): client items in cards + attached Excel ONLY, not the body table. D365CRM/IT-Dep folded into
+ *      it.solutions. Addresses embedded in USER_EMAIL (env PRPO_USER_EMAILS JSON overrides).
+ *   2. Suppliers & Open Orders email -> Mohamed Ashraf (PRPO_PROC_MAIL_TO overrides the default):
+ *      Sent-to-Supplier POs + Confirmed POs with 'Open order' status (the stale-approver ones).
+ *   3. Pending Invoicing email -> Mustajab + Meha + Clita by default (PRPO_INV_MAIL_TO overrides).
+ *   REMOVED COMPLETELY per CK: Finance Director & CEO items, and unassigned/settled leftovers — they appear
+ *   in NO email. The old finance/ops_hm/ops_all division emails are gone/retired (ops kept preview-only).
+ *
+ * PERSONAL email addressing: embedded USER_EMAIL map, overridden/merged by env PRPO_USER_EMAILS (JSON
+ *   {"dinesh.laxman":"a@x.com", ...}, keys case-insensitive). Unmapped user in live mode -> skipped + logged.
+ * TEST MODE (default ON): PRPO_PERSONAL_TEST != '0' -> every personal email goes to PRPO_TEST_MAIL_TO
+ *   (subject prefixed "[TEST · for <user>]"); if PRPO_TEST_MAIL_TO unset nothing personal is sent. Set
+ *   PRPO_PERSONAL_TEST=0 to go live. Optional PRPO_PERSONAL_CC added to every live personal email.
  *
  * HTTP test endpoints (authLevel: function, add &code=<your default host key>):
- *   ?division=procurement|finance|ops_hm|ops_all & format=html  -> preview that email (no send)
- *   ?division=... & debug=1                                      -> JSON counts for that division
- *   ?division=... & send=1                                       -> send just that division now
- *   ?send=1                                                      -> send ALL four now
- *   (no params)                                                  -> JSON summary of all four (no send)
+ *   ?division=procurement|finance|ops_hm|ops_all & format=html|debug=1|send=1   -> that division (ops_* preview-only)
+ *   ?person=<username> & format=html | send=1                                   -> one personal email
+ *   ?personal=1 [& send=1]                                                      -> list (or send) ALL personal emails
+ *   ?send=1                                                                     -> send everything (divisions + personal)
+ *   (no params)                                                                 -> JSON summary (no send)
  *
- * Env: TENANT_ID, CLIENT_ID, CLIENT_SECRET, MAIL_FROM (existing) + the four PRPO_*_MAIL_TO above.
- * Optional: PRPO_MAIL_FROM, PRPO_PR_URL, PRPO_PO_URL, PRPO_DASH_URL.
+ * Env: TENANT_ID, CLIENT_ID, CLIENT_SECRET, MAIL_FROM (existing) + PRPO_PROC_MAIL_TO, PRPO_FIN_MAIL_TO.
+ * Optional: PRPO_MAIL_FROM, PRPO_PR_URL, PRPO_PO_URL, PRPO_DASH_URL, PRPO_USER_EMAILS, PRPO_PERSONAL_TEST,
+ *           PRPO_TEST_MAIL_TO, PRPO_PERSONAL_CC.
  */
 const { app } = require('@azure/functions');
 const XLSX = require('xlsx');
@@ -32,8 +43,8 @@ const PR_MAP = {"Handyman Services_Manager":"Dep Managers","Building Services_As
 const PROC = new Set(["PR In Review","RFQ to suppliers","Qt received & Logged","OP confirms material","Procurement (in process)"]);
 const OPS = new Set(["Qt Shared to Op","Unit Price Updated"]);
 const PO_MAP = {"Advance payment request submitted (if applicable)":"Procurement","Procurement Manager":"Procurement","Accounting Manager":"Finance","Finance and Accounts Director":"Director","CEO":"CEO","LPO sent/shared with supplier":"Sent to Supplier"};
-const COLOR = {'Procurement':'#3b82f6','Operations to Confirm':'#14b8a6','Dep Managers':'#8b5cf6','Finance':'#22c55e','Director':'#ec4899','CEO':'#f59e0b','Sent to Supplier':'#a855f7','Pending Invoicing':'#f97316','Re-Assigned/Rejected':'#dc2626'};
-const GRAD = {'Procurement':'#eff5ff','Operations to Confirm':'#ebfbf7','Dep Managers':'#f4f1fe','Finance':'#eefbf3','Director':'#fdeff7','CEO':'#fff9ec','Sent to Supplier':'#f9f2ff','Pending Invoicing':'#fff4e8','Re-Assigned/Rejected':'#fef2f2'};
+const COLOR = {'Procurement':'#3b82f6','Operations to Confirm':'#14b8a6','Dep Managers':'#8b5cf6','Finance':'#22c55e','Director':'#ec4899','CEO':'#f59e0b','Sent to Supplier':'#a855f7','Pending Invoicing':'#f97316','Re-Assigned/Rejected':'#dc2626','Pending Internal':'#14b8a6','Pending Client':'#6366f1'};
+const GRAD = {'Procurement':'#eff5ff','Operations to Confirm':'#ebfbf7','Dep Managers':'#f4f1fe','Finance':'#eefbf3','Director':'#fdeff7','CEO':'#fff9ec','Sent to Supplier':'#f9f2ff','Pending Invoicing':'#fff4e8','Re-Assigned/Rejected':'#fef2f2','Pending Internal':'#ebfbf7','Pending Client':'#eef2ff'};
 const TYCOL = {'PR':'#2563eb','CPR':'#7c3aed','PO':'#0891b2'};
 
 /* ---- helpers ---- */
@@ -191,24 +202,25 @@ function f_dept(its,L,col){
 
 /* ---- divisions ---- */
 const DIVS = [
- {key:'procurement', mail:'PRPO_PROC_MAIL_TO', xlsx:'PRPO_Procurement_list.xlsx', title:'Procurement',
-  heading:'PR / PO Pipeline &#8212; Procurement', sub:'Items pending with Procurement-department users &#183; plus procurement &amp; sent-to-supplier POs', accent:'#3b82f6',
-  pr:['Procurement'], po:['Procurement','Sent to Supplier'],
-  findings:[f=>f_owners(f,'A','#3b82f6','Pending with &#8212; procurement queue'), f=>f_vendor(f,'Sent to Supplier','B','#a855f7','Sent to Supplier &#8212; awaiting delivery / GRN','Chase the suppliers below for delivery, then move to invoicing.'), f=>f_value(f,'C','#2563eb'), f=>f_oldest(f,'D','#dc2626'), f=>f_sla(f,'E','#e11d48')]},
- {key:'finance', mail:'PRPO_FIN_MAIL_TO', xlsx:'PRPO_Finance_list.xlsx', title:'Finance &amp; Approvals',
-  heading:'PR / PO Pipeline &#8212; Finance &amp; Approvals', sub:'Items pending with Accounts &amp; Tax (finance) users &#183; plus POs pending invoicing', accent:'#22c55e',
-  pr:['Finance','Director','CEO'], po:['Finance','Pending Invoicing','Director','CEO'],
-  findings:[f=>f_owners(f,'A','#22c55e','Pending approvals &#8212; waiting on you'), f=>f_vendor(f,'Pending Invoicing','B','#f97316','Pending Invoicing &#8212; Accounts to post','Post the supplier invoices below to clear these from the ledger.'), f=>f_value(f,'C','#2563eb'), f=>f_oldest(f,'D','#dc2626'), f=>f_sla(f,'E','#e11d48')]},
- {key:'ops_hm', mail:'PRPO_OPSHM_MAIL_TO', xlsx:'PRPO_Operations_HomeMaint_FitOut_list.xlsx', title:'Operations &#183; Home Maintenance + FitOut',
+ {key:'procurement', mail:'PRPO_PROC_MAIL_TO', defaultTo:'mohamed.ashraf@striveservicesgroup.com', xlsx:'PRPO_Suppliers_OpenOrders_list.xlsx', title:'Suppliers &amp; Open Orders',
+  heading:'PR / PO Pipeline &#8212; Suppliers &amp; Open Orders', sub:'Sent-to-supplier POs plus confirmed POs with open-order status &#183; member queues arrive as individual action emails', accent:'#a855f7',
+  pr:[], po:['Procurement','Sent to Supplier'],
+  match:it=>it.doc==='PO'&&(it.stage==='Sent to Supplier'||(it.ppend===false&&String(it.raw['Approval status']||'')==='Confirmed'&&String(it.raw['Purchase order status']||'')==='Open order')),
+  findings:[f=>f_vendor(f,'Sent to Supplier','A','#a855f7','Sent to Supplier &#8212; awaiting delivery / GRN','Chase the suppliers below for delivery, then move to invoicing.'), f=>f_value(f,'B','#2563eb'), f=>f_oldest(f,'C','#dc2626'), f=>f_sla(f,'D','#e11d48')]},
+ {key:'invoicing', mail:'PRPO_INV_MAIL_TO', defaultTo:'muhammad.mustajab@striveservicesgroup.com;mehawil@striveservicesgroup.com;clita.m@striveservicesgroup.com', xlsx:'PRPO_PendingInvoicing_list.xlsx', title:'Pending Invoicing',
+  heading:'PR / PO Pipeline &#8212; Pending Invoicing', sub:'POs confirmed &amp; received &#8212; awaiting supplier invoice posting by Accounts', accent:'#f97316',
+  pr:[], po:['Pending Invoicing'], match:it=>it.stage==='Pending Invoicing',
+  findings:[f=>f_vendor(f,'Pending Invoicing','A','#f97316','Pending Invoicing &#8212; by vendor','Post the supplier invoices below to clear these from the ledger.'), f=>f_value(f,'B','#2563eb'), f=>f_oldest(f,'C','#dc2626')]},
+ {key:'ops_hm', send:false, mail:'PRPO_OPSHM_MAIL_TO', xlsx:'PRPO_Operations_HomeMaint_FitOut_list.xlsx', title:'Operations &#183; Home Maintenance + FitOut',
   heading:'PR / PO Pipeline &#8212; Operations (Home Maintenance &amp; FitOut)', sub:'Operations-to-confirm &amp; dep-manager PRs whose requisition department is Home Maintenance or FitOut', accent:'#14b8a6',
   pr:['Operations to Confirm','Dep Managers'], po:[], depts:new Set(['Home Maintenance Services','FitOut Services']),
   findings:[f=>f_owners(f,'A','#14b8a6','Pending with &#8212; Home Maintenance &amp; FitOut queue'), f=>f_value(f,'B','#2563eb'), f=>f_oldest(f,'C','#dc2626'), f=>f_sla(f,'D','#e11d48')]},
- {key:'ops_all', mail:'PRPO_OPSALL_MAIL_TO', xlsx:'PRPO_Operations_AllDepts_list.xlsx', title:'Operations &#183; All Departments',
+ {key:'ops_all', send:false, mail:'PRPO_OPSALL_MAIL_TO', xlsx:'PRPO_Operations_AllDepts_list.xlsx', title:'Operations &#183; All Departments',
   heading:'PR / PO Pipeline &#8212; Operations (All Departments)', sub:'Operations-to-confirm &amp; dep-manager PRs for all other requisition departments (Building Services, Contracted Cleaning, Landscaping, etc.)', accent:'#8b5cf6',
   pr:['Operations to Confirm','Dep Managers'], po:[], xdepts:new Set(['Home Maintenance Services','FitOut Services']),
   findings:[f=>f_owners(f,'A','#8b5cf6','Pending with &#8212; who is holding the queue'), f=>f_dept(f,'B','#4f46e5'), f=>f_value(f,'C','#2563eb'), f=>f_oldest(f,'D','#dc2626'), f=>f_sla(f,'E','#e11d48')]},
 ];
-function filterDiv(items,cfg){ return items.filter(it=>itemDivision(it)===cfg.key); }
+function filterDiv(items,cfg){ return items.filter(it=> cfg.match? cfg.match(it) : (itemDivision(it)===cfg.key&&(!cfg.keep||cfg.keep(it))) ); }
 
 async function buildXlsxBase64(fil, cfg){
   const wb=new ExcelJS.Workbook(); wb.creator='Strive Services Group'; wb.created=new Date();
@@ -298,11 +310,137 @@ function buildDivision(cfg, items){
   return { subject, html:wrap, fil, count:tot, value:totv, cfg };
 }
 
+/* ---- PERSONAL action emails: one per pending ops / finance member ----
+ * Pool = genuinely-pending items in the finance / ops divisions, EXCLUDING Director+CEO stages (leadership
+ * stays in the Finance division email) and vendor stages. Procurement division untouched. */
+// CK-supplied mapping (2026-08-11 role table). Env PRPO_USER_EMAILS (JSON) merges over this.
+const USER_EMAIL={
+  "dinesh.laxman":"dinesh.laxman@sahalahfm.com",            // BS Approver
+  "Mohammad.w":"mohammad.w@sahalahfm.com",                  // BS Manager
+  "arman.b":"Arman.b@striveservicesgroup.com",              // Finance Approver
+  "Ayman.ismail":"ayman.ismail@striveservicesgroup.com",    // Finance Manager
+  "muhammad.mustajab":"muhammad.mustajab@striveservicesgroup.com", // Finance Pending Invoicing
+  "Shakir Ameer Bakhsh":"fitout.dc@candoo.ae",              // Fit-out Approver
+  "shijil.c":"shijil.c@candoo.ae",                          // Home Maintenance Approver
+  "it.solutions":"it.solutions@striveservicesgroup.com",    // IT approver (D365CRM / IT Dep folded in)
+  "Gokul.Krishna":"gokul.krishna@sahalahfm.com",            // PAC Approver
+  "Judhin.prabhakar":"judhin.prabhakar@sahalahfm.com",      // PAC Manager
+  "Mohamed.Ashraf":"mohamed.ashraf@striveservicesgroup.com",// Procurement Manager
+  "roderick.red":"roderick.red@striveservicesgroup.com",    // Procurement Staff
+  "Adnan.Ullah":"adnan.ullah@striveservicesgroup.com",      // Procurement Staff
+  "Aparna.Pauly":"procurement.asst@striveservicesgroup.com",// Procurement Staff
+  "pramod.c":"pramod.c@sahalahfm.com",                      // Security approver
+  "Abdul.Muqeet":"abdul.muqeet@sahalahfm.com",              // Security Manager
+  "teena.k":"Teena.k@sahalahfm.com",                        // Concierge Manager
+  "Riyaz.n":"riyaz.n@striveservicesgroup.com"               // Procurement Staff
+};
+// Line manager (CC on the personal email) per CK's role table. Keyed by F&O username.
+const USER_MANAGER={
+  "dinesh.laxman":"mohammad.w@sahalahfm.com",
+  "arman.b":"ayman.ismail@striveservicesgroup.com",
+  "muhammad.mustajab":"ayman.ismail@striveservicesgroup.com",
+  "Shakir Ameer Bakhsh":"nasser.saman@candoo.ae",
+  "shijil.c":"daniel.allen@striveservicesgroup.com",
+  "it.solutions":"shehzad.jehangir@striveservicesgroup.com",
+  "Gokul.Krishna":"judhin.prabhakar@sahalahfm.com",
+  "roderick.red":"mohamed.ashraf@striveservicesgroup.com",
+  "Adnan.Ullah":"mohamed.ashraf@striveservicesgroup.com",
+  "Aparna.Pauly":"mohamed.ashraf@striveservicesgroup.com",
+  "Layusha.cleatus":"mohamed.ashraf@striveservicesgroup.com",
+  "Riyaz.n":"mohamed.ashraf@striveservicesgroup.com",
+  "pramod.c":"abdul.muqeet@sahalahfm.com"
+};
+const _MGR={}; for(const k in USER_MANAGER) _MGR[_norm(k)]=USER_MANAGER[k];
+function managerFor(key){ return _MGR[key]||''; }
+function userEmailMap(){ const m={}; for(const k in USER_EMAIL) m[_norm(k)]=USER_EMAIL[k]; try{ const j=JSON.parse(process.env.PRPO_USER_EMAILS||'{}'); for(const k in j) m[_norm(k)]=String(j[k]||'').trim(); }catch(e){} return m; }
+function personalPool(items){ return items.filter(it=>it.ppend!==false && it.stage!=='Director'&&it.stage!=='CEO'&&it.stage!=='Sent to Supplier'&&it.stage!=='Pending Invoicing' && String(it.owner==null?'':it.owner).trim()!=='' && it.owner!=='(unassigned)'); }
+// Same human appears under both full-name and username F&O accounts — fold them into one personal email.
+const USER_ALIAS={'dinesh laxman laxman':'dinesh.laxman','gokul krishna pillai':'Gokul.Krishna','pramod chandrasenan chandrasenan':'pramod.c','shijil choyaprath chandran':'shijil.c','zaheer ahmed ameer':'Zaheer.Ahmed','d365crm admin':'it.solutions','d365crmadmin':'it.solutions','it department':'it.solutions'};
+function canonOwner(u){ return USER_ALIAS[_norm(u)]||u; }
+function groupByOwner(pool){ const g={}; for(const it of pool){ const cu=canonOwner(it.owner); const k=_norm(cu); const e=g[k]||(g[k]={key:k,items:[],disp:{}}); e.items.push(it); e.disp[cu]=(e.disp[cu]||0)+1; } return Object.values(g).map(e=>({key:e.key,user:Object.entries(e.disp).sort((a,b2)=>b2[1]-a[1])[0][0],items:e.items})).sort((a,b2)=>b2.items.length-a.items.length); }
+function firstName(u){ const t=String(u==null?'':u).trim().split(/[.\s]+/)[0]||''; return t? t.charAt(0).toUpperCase()+t.slice(1) : 'there'; }
+const PW=760;
+function pcard(label,val,sub,col,bg,vs){ return '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;background:'+bg+';border:1px solid #e8ecf2;border-top:3px solid '+col+';border-radius:10px;box-shadow:0 1px 3px rgba(16,24,40,0.08);"><tr><td style="padding:11px 13px;"><div style="font-family:'+FONT+';font-size:9.5px;font-weight:800;color:#5b6b7f;text-transform:uppercase;">'+label+'</div><div style="margin:6px 0 2px;white-space:nowrap;font-family:'+FONT+';font-size:'+(vs||24)+'px;font-weight:800;color:'+col+';">'+val+'</div><div style="font-family:'+FONT+';font-size:11px;font-weight:700;color:'+TEAL+';white-space:nowrap;">'+sub+'</div></td></tr></table>'; }
+function buildPersonal(p){
+  const fil=p.items.slice().sort((a,b2)=>(b2.age||0)-(a.age||0));
+  const n=fil.length, totv=fil.reduce((a,it)=>a+it.value,0);
+  const prn=fil.filter(it=>it.doc!=='PO').length, pon=n-prn;
+  const old=fil[0], oldAge=Math.round((old&&old.age)||0);
+  const br=fil.filter(it=>(it.age||0)>7).length;
+  const stamp=new Date(Date.now()+4*3600*1000).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric',timeZone:'UTC'});
+  // Operations-to-Confirm split (per CK): "Unit prices updated" = shared with the CLIENT for confirmation ->
+  // "Pending Client" (cards + Excel only, NOT the body table); every other ops-confirm step -> "Pending Internal".
+  const CLIENT_STEP='Unit prices updated in PR lines';
+  const pst=it=>it.stage==='Operations to Confirm'?(String(it.raw['Step name']||'').trim()===CLIENT_STEP?'Pending Client':'Pending Internal'):it.stage;
+  const xfil=fil.map(it=>Object.assign({},it,{stage:pst(it)}));
+  const G=12, cw=Math.floor((PW-G*3)/4);
+  const gutter='<td width="'+G+'" style="width:'+G+'px;font-size:6px;line-height:6px;mso-line-height-rule:exactly;">&#160;</td>';
+  const defs=[['Items pending',String(n),'PR '+prn+' &#183; PO '+pon,'#3b82f6','#eff5ff',24],
+              ['Total value','AED '+money(totv),'across your queue','#0f766e','#ebfbf7',19],
+              ['Oldest item',oldAge+'d',esc(old?String(old.ref):'-'),'#dc2626','#fef2f2',24],
+              ['Past 7-day SLA',String(br),'of '+n+' item'+(n===1?'':'s'),'#f59e0b','#fff9ec',24]];
+  const cardsHtml='<table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:separate;"><tr>'+defs.map((c,i)=>'<td width="'+cw+'" valign="top" style="width:'+cw+'px;">'+pcard(c[0],c[1],c[2],c[3],c[4],c[5])+'</td>'+(i<defs.length-1?gutter:'')).join('')+'</tr></table><div style="height:'+G+'px;font-size:'+G+'px;line-height:'+G+'px;">&#160;</div>';
+  // Stage cards row (uses the Internal/Client split)
+  const agg={}; for(const it of xfil){ const k=it.doc+'|'+it.stage; const x=agg[k]||(agg[k]={n:0,sum:0,c:0,amt:0}); x.n++; x.amt+=it.value; if(it.age!=null){x.sum+=it.age;x.c++;} }
+  const PORD=[['PR','Re-Assigned/Rejected'],['PR','Pending Internal'],['PR','Pending Client'],['PR','Procurement'],['PR','Dep Managers'],['PR','Finance'],['PO','Procurement'],['PO','Finance']];
+  const lp=PORD.filter(p=>agg[p[0]+'|'+p[1]]&&agg[p[0]+'|'+p[1]].n>0);
+  const cw2=Math.min(200,Math.floor((PW-G*Math.max(0,lp.length-1))/Math.max(1,lp.length)));
+  const stageCards=lp.length?'<table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:separate;"><tr>'+lp.map((p,i)=>'<td width="'+cw2+'" valign="top" style="width:'+cw2+'px;">'+card2(p[0],p[1],agg[p[0]+'|'+p[1]])+'</td>'+(i<lp.length-1?gutter:'')).join('')+'</tr></table><div style="height:'+G+'px;font-size:'+G+'px;line-height:'+G+'px;">&#160;</div>':'';
+  // Body table: Pending-Client items stay OUT (they are with the client) — cards + attached Excel only.
+  const tfil=xfil.filter(it=>it.stage!=='Pending Client');
+  const clientN=n-tfil.length;
+  const rows=tfil.slice(0,25).map(it=>['<span style="font-weight:700;color:'+NAVY+';">'+esc(it.ref)+'</span>',sv(it.typ,TYCOL[it.typ]),esc(String(it.doc==='PO'?(it.raw['Vendor name']||'-'):(it.raw['Name']||'-')).slice(0,30)),esc(String(it.raw['Step name']||'-').slice(0,24)),esc(String(it.dept||'-').slice(0,16)),'AED '+money(it.value),agec(it.age)]);
+  const tbl=otable([['Ref',90,'l'],['Type',36,'c'],['Description / Vendor',148,'l'],['Waiting on step',116,'l'],['Department',90,'l'],['Value',84,'r'],['Age',40,'c']],rows);
+  const more=(tfil.length>25?'<div style="font-family:'+FONT+';font-size:11.5px;color:#7688a0;margin:7px 0 0;">&#8230;and <b style="color:'+NAVY+';">'+(tfil.length-25)+'</b> more &#8212; the attached Excel has your complete list.</div>':'')
+    +(clientN>0?'<div style="font-family:'+FONT+';font-size:11.5px;color:#4b5c74;margin:7px 0 0;">'+sv(String(clientN)+' Pending-Client item'+(clientN===1?'':'s'),COLOR['Pending Client'])+' (unit prices shared with the client for confirmation) are summarised in the cards above and listed in the attached Excel.</div>':'');
+  const att='<div style="border:1px solid #cbd9ec;background:#f2f7ff;padding:10px 13px;margin:0 0 2px;border-radius:8px;font:400 12px '+HF+';color:#334867;">&#8505;&#65039; <b style="color:'+HNAVY+';">Data source of truth:</b> live F&amp;O PR / PO data (Dynamics 365 Finance &amp; Operations) &#183; refreshed daily.</div>';
+  const inner='<div style="width:'+PW+'px;font-family:'+FONT+';color:#22303c;">'
+    +'<div style="font:400 13px '+HF+';color:#334155;margin:0 0 8px;">Hi <b style="color:'+HNAVY+';">'+esc(firstName(p.user))+'</b> &#8212; you have '+b(n)+' open PR / PO item'+(n===1?'':'s')+' pending your action, totalling '+b('AED '+money(totv))+'.'+(oldAge>0?' The oldest has been waiting '+b(oldAge+' days')+'.':'')+'</div>'
+    +cardsHtml+stageCards+att
+    +'<div style="font-family:'+FONT+';font-weight:800;font-size:15px;color:'+NAVY+';margin:16px 0 2px;">&#128203; Your pending items</div>'
+    +'<div style="font-family:'+FONT+';font-size:11.5px;color:#7688a0;margin:0 0 9px;">Oldest first &#183; age = days at the current workflow step &#183; showing '+Math.min(25,tfil.length)+' of '+n+(clientN>0?' (Pending-Client items in cards &amp; Excel)':'')+'.</div>'
+    +tbl+more+'</div>';
+  const shell='<table role="presentation" width="'+(PW+40)+'" cellpadding="0" cellspacing="0" style="width:'+(PW+40)+'px;max-width:'+(PW+40)+'px;">'
+    +'<tr><td style="background:'+HNAVY+';padding:16px 20px;border-bottom:3px solid '+HGOLD+';border-radius:14px 14px 0 0;"><table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>'
+    +'<td style="font:700 19px '+HF+';color:#fff;">Your PR / PO Action List</td>'
+    +'<td align="right" valign="top" style="font:600 12px '+HF+';color:'+HGOLD+';">'+stamp+'</td></tr></table>'
+    +'<div style="font:400 12px '+HF+';color:'+HMUT+';margin-top:4px;">Personal daily digest of items waiting on <b style="color:#fff;">'+esc(p.user)+'</b> &#183; <a href="'+DASH+'" style="color:'+HGOLD+';font-weight:800;text-decoration:underline;">Open Live Dashboard &#8599;</a></div></td></tr>'
+    +'<tr><td style="background:#fff;border-left:1px solid '+HBORD+';border-right:1px solid '+HBORD+';padding:16px 20px;">'+inner+'</td></tr>'
+    +'<tr><td style="background:'+HNAVY+';padding:12px 20px;border-top:3px solid '+HGOLD+';border-radius:0 0 14px 14px;font:400 11px '+HF+';color:'+HMUT+';">'
+    +'<div style="color:'+HGOLD+';font-weight:700;">FOR EXCELLENCE WE STRIVE</div>'
+    +'<div style="margin-top:5px;">Sent automatically every day at 10:00 AM Dubai while items are pending with you. <b>Age = days at the current workflow step.</b> Your full line-item list is attached.</div></td></tr></table>';
+  const heading='Your PR / PO Action List &#8212; '+esc(p.user);
+  const wrap='<!doctype html><html xmlns:o="urn:schemas-microsoft-com:office:office"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="X-UA-Compatible" content="IE=edge"><title>'+heading+'</title>'
+    +'<!--[if mso]><xml><o:OfficeDocumentSettings><o:PixelsPerInch>96</o:PixelsPerInch></o:OfficeDocumentSettings></xml><![endif]-->'
+    +'<style>table{mso-table-lspace:0pt;mso-table-rspace:0pt;border-collapse:collapse;} td{mso-line-height-rule:exactly;} img{-ms-interpolation-mode:bicubic;} body{-webkit-text-size-adjust:100%;-ms-text-size-adjust:100%;}</style></head>'
+    +'<body style="margin:0;padding:0;background:#EEF1F6;"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#EEF1F6;padding:20px 0;"><tr><td align="center">'+shell+'</td></tr></table></body></html>';
+  const subject='Action needed — '+n+' PR/PO item'+(n===1?'':'s')+' pending with you ('+stamp+')';
+  const xlsx='PRPO_'+p.user.replace(/[^\w.-]+/g,'_')+'_pending.xlsx';
+  return { subject, html:wrap, fil:xfil, count:n, value:totv, user:p.user, key:p.key, xlsx };
+}
+async function sendPersonal(out, context){
+  const from=process.env.PRPO_MAIL_FROM||process.env.MAIL_FROM;
+  if(!from) throw new Error('MAIL_FROM / PRPO_MAIL_FROM not set');
+  const test=(process.env.PRPO_PERSONAL_TEST||'1')!=='0';
+  const real=userEmailMap()[out.key]||'';
+  let to, subject=out.subject;
+  if(test){ const t=(process.env.PRPO_TEST_MAIL_TO||'').trim(); if(!t){ if(context) context.log('personal skip '+out.user+': test mode, PRPO_TEST_MAIL_TO not set'); return {user:out.user,sent:false,reason:'test mode: PRPO_TEST_MAIL_TO not set'}; } to=[t]; subject='[TEST · for '+out.user+(real?'':' · NO ADDRESS MAPPED')+'] '+subject; }
+  else { if(!real){ if(context) context.log('personal skip '+out.user+': no address mapped'); return {user:out.user,sent:false,reason:'no address mapped'}; } to=[real]; }
+  const msg={subject, body:{contentType:'HTML',content:out.html}, toRecipients:to.map(a=>({emailAddress:{address:a}})),
+    attachments:[{'@odata.type':'#microsoft.graph.fileAttachment',name:out.xlsx,contentType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',contentBytes:await buildXlsxBase64(out.fil,{key:'personal'})}]};
+  if(!test){ const cc=[managerFor(out.key)].concat((process.env.PRPO_PERSONAL_CC||'').split(/[;,]/)).map(s=>String(s||'').trim()).filter(Boolean).filter(a=>a.toLowerCase()!==String(to[0]).toLowerCase()); if(cc.length) msg.ccRecipients=cc.map(a=>({emailAddress:{address:a}})); }
+  const token=await getToken('https://graph.microsoft.com');
+  const r=await fetch('https://graph.microsoft.com/v1.0/users/'+encodeURIComponent(from)+'/sendMail',{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body:JSON.stringify({message:msg,saveToSentItems:true})});
+  if(r.status!==202){ const j=await r.json().catch(()=>({})); throw new Error('personal sendMail '+r.status+' '+JSON.stringify(j.error||j).slice(0,300)); }
+  if(context) context.log('personal sent for '+out.user+' -> '+to[0]+(test?' (TEST)':''));
+  return {user:out.user,sent:true,to:to[0],test};
+}
+
 /* ---- auth + send ---- */
 async function getToken(scopeBase){ const body=new URLSearchParams({client_id:process.env.CLIENT_ID,client_secret:process.env.CLIENT_SECRET,grant_type:'client_credentials',scope:scopeBase.replace(/\/+$/,'')+'/.default'}); const r=await fetch(`https://login.microsoftonline.com/${process.env.TENANT_ID}/oauth2/v2.0/token`,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body}); const j=await r.json(); if(!r.ok||!j.access_token) throw new Error('token '+r.status+' '+(j.error_description||j.error||'')); return j.access_token; }
 async function sendDivision(out, context){
   const from=process.env.PRPO_MAIL_FROM||process.env.MAIL_FROM;
-  const toList=(process.env[out.cfg.mail]||'').split(/[;,]/).map(s=>s.trim()).filter(Boolean);
+  const toList=(process.env[out.cfg.mail]||out.cfg.defaultTo||'').split(/[;,]/).map(s=>s.trim()).filter(Boolean);
   if(!from) throw new Error('MAIL_FROM / PRPO_MAIL_FROM not set');
   if(!toList.length){ if(context) context.log('skip '+out.cfg.key+': '+out.cfg.mail+' not set'); return {sent:false,reason:'no recipients'}; }
   const xlsxB64=await buildXlsxBase64(out.fil, out.cfg);
@@ -320,22 +458,36 @@ async function loadItems(){ const [prRows,poRows]=await Promise.all([fetchXlsx(P
 /* ---- triggers ---- */
 app.timer('prpo-email-daily', { schedule:'0 0 6 * * *', handler:async(timer,context)=>{
   const items=await loadItems();
-  for(const cfg of DIVS){ try{ await sendDivision(buildDivision(cfg,items),context); }catch(e){ context.error('prpo '+cfg.key+' FAILED: '+e.message); } }
+  for(const cfg of DIVS){ if(cfg.send===false) continue; try{ await sendDivision(buildDivision(cfg,items),context); }catch(e){ context.error('prpo '+cfg.key+' FAILED: '+e.message); } }
+  for(const p of groupByOwner(personalPool(items))){ try{ await sendPersonal(buildPersonal(p),context); }catch(e){ context.error('prpo personal '+p.user+' FAILED: '+e.message); } }
 }});
 app.http('prpo-email', { methods:['GET','OPTIONS'], authLevel:'function', route:'prpo-email', handler:async(request,context)=>{
   try{
-    const url=new URL(request.url); const dk=url.searchParams.get('division'); const sendAll=url.searchParams.get('send')==='1'&&!dk;
+    const url=new URL(request.url); const dk=url.searchParams.get('division'); const pk=url.searchParams.get('person');
+    const wantSend=url.searchParams.get('send')==='1'; const sendAll=wantSend&&!dk&&!pk&&url.searchParams.get('personal')!=='1';
     const items=await loadItems();
-    if(dk){ const cfg=DIVS.find(d=>d.key===dk); if(!cfg) return {status:400,jsonBody:{error:'unknown division; use procurement|finance|ops_hm|ops_all'}};
+    if(dk){ const cfg=DIVS.find(d=>d.key===dk); if(!cfg) return {status:400,jsonBody:{error:'unknown division; use procurement|invoicing|ops_hm|ops_all'}};
       const out=buildDivision(cfg,items);
       if(url.searchParams.get('format')==='html') return {status:200,headers:{'Content-Type':'text/html; charset=utf-8'},body:out.html};
-      if(url.searchParams.get('debug')==='1') return {status:200,jsonBody:{division:dk,count:out.count,value:Math.round(out.value)}};
-      if(url.searchParams.get('send')==='1'){ const s=await sendDivision(out,context); return {status:200,jsonBody:{division:dk,...s}}; }
-      return {status:200,jsonBody:{division:dk,count:out.count,value:Math.round(out.value)}};
+      if(url.searchParams.get('debug')==='1') return {status:200,jsonBody:{division:dk,count:out.count,value:Math.round(out.value),retired:cfg.send===false}};
+      if(wantSend){ if(cfg.send===false) return {status:400,jsonBody:{division:dk,sent:false,reason:'retired — replaced by personal emails'}}; const s=await sendDivision(out,context); return {status:200,jsonBody:{division:dk,...s}}; }
+      return {status:200,jsonBody:{division:dk,count:out.count,value:Math.round(out.value),retired:cfg.send===false}};
     }
-    const summary=[]; for(const cfg of DIVS){ const out=buildDivision(cfg,items); let s={sent:false}; if(sendAll) s=await sendDivision(out,context); summary.push({division:cfg.key,count:out.count,value:Math.round(out.value),...s}); }
-    return {status:200,jsonBody:{sentAll:sendAll,divisions:summary}};
+    if(pk){ const p=groupByOwner(personalPool(items)).find(e=>e.key===_norm(pk));
+      if(!p) return {status:404,jsonBody:{error:'no pending items for this user',user:pk,people:groupByOwner(personalPool(items)).map(e=>e.user)}};
+      const out=buildPersonal(p);
+      if(url.searchParams.get('format')==='html') return {status:200,headers:{'Content-Type':'text/html; charset=utf-8'},body:out.html};
+      if(wantSend){ const s=await sendPersonal(out,context); return {status:200,jsonBody:s}; }
+      return {status:200,jsonBody:{user:out.user,email:userEmailMap()[out.key]||null,count:out.count,value:Math.round(out.value)}};
+    }
+    if(url.searchParams.get('personal')==='1'){ const map=userEmailMap(); const people=[];
+      for(const p of groupByOwner(personalPool(items))){ const out=buildPersonal(p); let s={sent:false}; if(wantSend) s=await sendPersonal(out,context); people.push({user:p.user,email:map[p.key]||null,count:out.count,value:Math.round(out.value),...s}); }
+      return {status:200,jsonBody:{testMode:(process.env.PRPO_PERSONAL_TEST||'1')!=='0',sent:wantSend,people}};
+    }
+    const summary=[]; for(const cfg of DIVS){ if(cfg.send===false) continue; const out=buildDivision(cfg,items); let s={sent:false}; if(sendAll) s=await sendDivision(out,context); summary.push({division:cfg.key,count:out.count,value:Math.round(out.value),...s}); }
+    const people=[]; for(const p of groupByOwner(personalPool(items))){ const out=buildPersonal(p); let s={sent:false}; if(sendAll) s=await sendPersonal(out,context); people.push({user:p.user,count:out.count,value:Math.round(out.value),...s}); }
+    return {status:200,jsonBody:{sentAll:sendAll,testMode:(process.env.PRPO_PERSONAL_TEST||'1')!=='0',divisions:summary,people}};
   }catch(e){ context.error('prpo-email failed:',e); return {status:500,jsonBody:{error:e.message}}; }
 }});
 
-module.exports = { buildItems, buildDivision, buildXlsxBase64, parseXlsx, DIVS };
+module.exports = { buildItems, buildDivision, buildXlsxBase64, parseXlsx, DIVS, personalPool, groupByOwner, buildPersonal, userEmailMap };
