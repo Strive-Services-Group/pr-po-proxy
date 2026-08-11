@@ -234,7 +234,7 @@ async function buildXlsxBase64(fil, cfg){
   const wb=new ExcelJS.Workbook(); wb.creator='Strive Services Group'; wb.created=new Date();
   const ws=wb.addWorksheet('Open Items', { views:[{ state:'frozen', ySplit:1 }], properties:{ defaultRowHeight:16 } });
   ws.columns=[
-    {header:'Ref',key:'ref',width:16},{header:'Doc',key:'doc',width:7},{header:'Stage / Bucket',key:'stage',width:22},
+    {header:'Ref',key:'ref',width:16},{header:'Doc',key:'doc',width:7},{header:'Quote Ref',key:'qref',width:12},{header:'Stage / Bucket',key:'stage',width:22},
     {header:'Step name',key:'step',width:34},{header:'Status',key:'status',width:22},{header:'Department',key:'dept',width:26},
     {header:'Location',key:'loc',width:22},{header:'Pending With',key:'pend',width:20},{header:'Vendor',key:'vendor',width:30},
     {header:'Value (AED)',key:'value',width:15},{header:'Age (days)',key:'age',width:11},{header:'Created',key:'created',width:13},
@@ -244,7 +244,8 @@ async function buildXlsxBase64(fil, cfg){
     if(it.doc!=='PO'){ status=String(r['Status']||''); loc=r['Location']; ven=''; created=ymdStr(r['Created date']); stepd=ymdStr(r['Step date and time']); title=r['Name']; prep=r['Preparer']; }
     else { status=(String(r['Approval status']||'')+' / '+String(r['Purchase order status']||'')).replace(/^ \/ | \/ $/g,''); loc=r['Location']; ven=r['Vendor name']; created=ymdStr(r['Created date and time']); stepd=ymdStr(r['Step date and time']); title=''; prep=r['Purchase requisition']; }
     const pend=it.owner;  // computed owner: ops-user for ops-confirm, Created-by for Draft POs, approver otherwise
-    ws.addRow({ref:it.ref,doc:it.typ,stage:it.stage,step:r['Step name'],status,dept:it.dept,loc,pend,vendor:ven,value:Math.round((it.value||0)*100)/100,age:(it.age==null?null:it.age),created,stepd,title,prep}); });
+    const qref=(it.doc!=='PO'? String(r['Quotation reference']||'') : '');
+    ws.addRow({ref:it.ref,doc:it.typ,qref,stage:it.stage,step:r['Step name'],status,dept:it.dept,loc,pend,vendor:ven,value:Math.round((it.value||0)*100)/100,age:(it.age==null?null:it.age),created,stepd,title,prep}); });
   const DIVCOL={procurement:'FF1D4ED8',finance:'FF16A34A',ops_hm:'FF0F766E',ops_all:'FF7C3AED'};
   const HEAD=DIVCOL[cfg&&cfg.key]||'FF14315E';
   const h=ws.getRow(1); h.height=26;
@@ -258,7 +259,7 @@ async function buildXlsxBase64(fil, cfg){
     const av=ac.value; if(typeof av==='number'){ ac.font={bold:true,size:10.5,color:{argb: av>30?'FFB42318': av>7?'FF9A6700':'FF1F7A33'}}; }
     row.getCell('doc').alignment={vertical:'middle',horizontal:'center'};
   }
-  ws.autoFilter={ from:{row:1,column:1}, to:{row:1,column:15} };
+  ws.autoFilter={ from:{row:1,column:1}, to:{row:1,column:16} };
   const buf=await wb.xlsx.writeBuffer();
   return Buffer.from(buf).toString('base64');
 }
@@ -356,7 +357,12 @@ const USER_MANAGER={
   "Aparna.Pauly":"mohamed.ashraf@striveservicesgroup.com",
   "Layusha.cleatus":"mohamed.ashraf@striveservicesgroup.com",
   "Riyaz.n":"mohamed.ashraf@striveservicesgroup.com",
-  "pramod.c":"abdul.muqeet@sahalahfm.com"
+  "pramod.c":"abdul.muqeet@sahalahfm.com",
+  // Department managers report to the Operation Director:
+  "teena.k":"nathan.buys@striveservicesgroup.com",
+  "Abdul.Muqeet":"nathan.buys@striveservicesgroup.com",
+  "Judhin.prabhakar":"nathan.buys@striveservicesgroup.com",
+  "Mohammad.w":"nathan.buys@striveservicesgroup.com"
 };
 const _MGR={}; for(const k in USER_MANAGER) _MGR[_norm(k)]=USER_MANAGER[k];
 function managerFor(key){ return _MGR[key]||''; }
