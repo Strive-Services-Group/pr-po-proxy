@@ -134,15 +134,15 @@ function buildItems(prRows, poRows){
 
 /* ---- render helpers ---- */
 function chip(doc){ const c=doc==='PR'?'#2563eb':'#0891b2'; return '<span style="display:inline-block;background:'+c+';color:#fff;font-family:'+FONT+';font-size:9px;font-weight:800;padding:1px 5px;margin-right:6px;vertical-align:middle;">'+doc+'</span>'; }
-function card2(doc,bk,x){ const a=x.c?(x.sum/x.c):0; return '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;background:'+GRAD[bk]+';border:1px solid #e8ecf2;border-top:3px solid '+COLOR[bk]+';border-radius:10px;box-shadow:0 1px 3px rgba(16,24,40,0.08);"><tr><td style="padding:11px 13px;"><table role="presentation" cellpadding="0" cellspacing="0"><tr><td valign="middle" bgcolor="'+(doc==='PR'?'#2563eb':'#0891b2')+'" style="background:'+(doc==='PR'?'#2563eb':'#0891b2')+';padding:2px 6px;font-family:'+FONT+';font-size:9px;font-weight:800;color:#ffffff;border-radius:3px;">'+doc+'</td><td width="6" style="width:6px;">&#160;</td><td valign="middle" style="font-family:'+FONT+';font-size:9.5px;font-weight:800;color:#5b6b7f;text-transform:uppercase;">'+esc(bk)+'</td></tr></table><div style="margin:6px 0 2px;white-space:nowrap;"><span style="font-family:'+FONT+';font-size:24px;font-weight:800;color:'+COLOR[bk]+';">'+x.n+'</span><span style="font-family:'+FONT+';font-size:12px;font-weight:800;color:'+RED+';"> ('+a.toFixed(1)+'d)</span></div><div style="font-family:'+FONT+';font-size:11px;font-weight:700;color:'+TEAL+';">AED '+money(x.amt)+'</div></td></tr></table>'; }
+function card2(doc,bk,x,tr){ const a=x.c?(x.sum/x.c):0; return '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;background:'+GRAD[bk]+';border:1px solid #e8ecf2;border-top:3px solid '+COLOR[bk]+';border-radius:10px;box-shadow:0 1px 3px rgba(16,24,40,0.08);"><tr><td style="padding:11px 13px;"><table role="presentation" cellpadding="0" cellspacing="0"><tr><td valign="middle" bgcolor="'+(doc==='PR'?'#2563eb':'#0891b2')+'" style="background:'+(doc==='PR'?'#2563eb':'#0891b2')+';padding:2px 6px;font-family:'+FONT+';font-size:9px;font-weight:800;color:#ffffff;border-radius:3px;">'+doc+'</td><td width="6" style="width:6px;">&#160;</td><td valign="middle" style="font-family:'+FONT+';font-size:9.5px;font-weight:800;color:#5b6b7f;text-transform:uppercase;">'+esc(bk)+'</td></tr></table><div style="margin:6px 0 2px;white-space:nowrap;"><span style="font-family:'+FONT+';font-size:24px;font-weight:800;color:'+COLOR[bk]+';">'+x.n+'</span><span style="font-family:'+FONT+';font-size:12px;font-weight:800;color:'+RED+';"> ('+a.toFixed(1)+'d)</span>'+deltaBadge(tr,x.n)+'</div><div style="font-family:'+FONT+';font-size:11px;font-weight:700;color:'+TEAL+';">AED '+money(x.amt)+'</div>'+histLine(tr)+'</td></tr></table>'; }
 // Compact cards in ONE row: PR cards | vertical divider | PO cards. Width auto-shrinks to fit W (capped at 200px).
-function cardrow2(pairs,agg){
+function cardrow2(pairs,agg,trFn){
   const live=pairs.filter(([d,bk])=>agg[d+'|'+bk]&&agg[d+'|'+bk].n>0); if(!live.length) return '';
   const G=12, pr=live.filter(p=>p[0]==='PR'), po=live.filter(p=>p[0]==='PO');
   const both=(pr.length&&po.length), n=live.length;
   const divW=both?(2+2*G):0, gutW=G*(n-(both?2:1));
   const cw=Math.min(200,Math.floor((W-divW-gutW)/n));
-  const cell=p=>'<td width="'+cw+'" valign="top" style="width:'+cw+'px;">'+card2(p[0],p[1],agg[p[0]+'|'+p[1]])+'</td>';
+  const cell=p=>'<td width="'+cw+'" valign="top" style="width:'+cw+'px;">'+card2(p[0],p[1],agg[p[0]+'|'+p[1]],trFn?trFn(p[0],p[1]):null)+'</td>';
   // Outlook Word engine ignores font-size:0 — use tiny-but-nonzero font/line-height so spacers keep their declared width.
   const gutter='<td width="'+G+'" style="width:'+G+'px;font-size:6px;line-height:6px;mso-line-height-rule:exactly;">&#160;</td>';
   const seg=arr=>arr.map((p,i)=>cell(p)+(i<arr.length-1?gutter:'')).join('');
@@ -284,19 +284,26 @@ function f_details(fil, cfg){
     +'<table role="presentation" width="'+W+'" cellpadding="0" cellspacing="0" style="width:'+W+'px;border:1px solid '+HBORD+';border-collapse:separate;border-spacing:0;border-radius:8px;overflow:hidden;box-shadow:0 1px 3px rgba(16,24,40,0.07);">'+head+body+more+'</table>';
 }
 
-function buildDivision(cfg, items){
+function buildDivision(cfg, items, hist){
   const fil=filterDiv(items,cfg);
   const agg={}; for(const it of fil){ const k=it.doc+'|'+it.stage; const x=agg[k]||(agg[k]={n:0,sum:0,c:0,amt:0}); x.n++; x.amt+=it.value; if(it.age!=null){x.sum+=it.age;x.c++;} }
   const pairs=STAGE_ORDER.filter(p=>agg[p[0]+'|'+p[1]]);
-  const cards=cardrow2(pairs,agg);
+  // Per-stage 3-day history (from the git-snapshot data), shown vertically inside each card.
+  const hdays=histDayList(); const histAgg={};
+  for(const hd of hdays){ if(hist&&hist[hd.ymd]){ const m={}; for(const it2 of filterDiv(hist[hd.ymd],cfg)){ const k2=it2.doc+'|'+it2.stage; m[k2]=(m[k2]||0)+1; } histAgg[hd.ymd]=m; } }
+  const trFn=(doc,bk)=>hdays.map(hd=>({lab:hd.lab,n:histAgg[hd.ymd]?String(histAgg[hd.ymd][doc+'|'+bk]||0):'&#8211;'}));
+  const cards=cardrow2(pairs,agg,trFn);
   const analysis=cfg.findings.map(fn=>fn(fil)).join('');
   const stamp=new Date(Date.now()+4*3600*1000).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric',timeZone:'UTC'});
   const tot=fil.length, totv=fil.reduce((a,it)=>a+it.value,0);
   const att='<div style="border:1px solid #cbd9ec;background:#f2f7ff;padding:11px 14px;margin:0 0 2px;border-radius:8px;font:400 12px '+HF+';color:#334867;">&#8505;&#65039; <b style="color:'+HNAVY+';">Note &#8212; Data source of truth:</b> all data and counts are based on the F&amp;O PR / PO actual data (Dynamics 365 Finance &amp; Operations).</div>';
   const titleTxt=cfg.title.replace(/&#183;/g,'·').replace(/&amp;/g,'&');
+  const trendBlock='<table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:separate;"><tr><td width="300" valign="top" style="width:300px;">'
+    +tcard('Open items &#8212; 3 days',trendCols(hist,s=>filterDiv(s,cfg).length,tot),cfg.accent||'#3b82f6','AED '+money(totv))
+    +'</td></tr></table><div style="height:12px;font-size:12px;line-height:12px;">&#160;</div>';
   const inner='<div style="width:'+W+'px;font-family:'+FONT+';color:#22303c;">'
     +'<div style="font:400 12px '+HF+';color:#607083;margin:0 0 10px;">This queue: '+b(tot)+' open items &#183; '+b('AED '+money(totv))+' &#183; live-pipeline logic, reconciles to the dashboard.</div>'
-    +cards+att
+    +trendBlock+cards+att
     +'<div style="font-family:'+FONT+';font-weight:800;font-size:15px;color:'+NAVY+';margin:16px 0 2px;">&#128269; Analysis &#8212; who to chase today</div>'
     +'<div style="font-family:'+FONT+';font-size:11.5px;color:#7688a0;margin:0 0 11px;">Auto-generated daily from the latest data, scoped to '+cfg.title+'.</div>'
     +'<div style="width:'+W+'px;">'+analysis+'</div>'
@@ -374,8 +381,8 @@ function canonOwner(u){ return USER_ALIAS[_norm(u)]||u; }
 function groupByOwner(pool){ const g={}; for(const it of pool){ const cu=canonOwner(it.owner); const k=_norm(cu); const e=g[k]||(g[k]={key:k,items:[],disp:{}}); e.items.push(it); e.disp[cu]=(e.disp[cu]||0)+1; } return Object.values(g).map(e=>({key:e.key,user:Object.entries(e.disp).sort((a,b2)=>b2[1]-a[1])[0][0],items:e.items})).sort((a,b2)=>b2.items.length-a.items.length); }
 function firstName(u){ const t=String(u==null?'':u).trim().split(/[.\s]+/)[0]||''; return t? t.charAt(0).toUpperCase()+t.slice(1) : 'there'; }
 const PW=760;
-function pcard(label,val,sub,col,bg,vs){ return '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;background:'+bg+';border:1px solid #e8ecf2;border-top:3px solid '+col+';border-radius:10px;box-shadow:0 1px 3px rgba(16,24,40,0.08);"><tr><td style="padding:11px 13px;"><div style="font-family:'+FONT+';font-size:9.5px;font-weight:800;color:#5b6b7f;text-transform:uppercase;">'+label+'</div><div style="margin:6px 0 2px;white-space:nowrap;font-family:'+FONT+';font-size:'+(vs||24)+'px;font-weight:800;color:'+col+';">'+val+'</div><div style="font-family:'+FONT+';font-size:11px;font-weight:700;color:'+TEAL+';white-space:nowrap;">'+sub+'</div></td></tr></table>'; }
-function buildPersonal(p){
+function pcard(label,val,sub,col,bg,vs){ return '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;background:'+bg+';border:1px solid #e8ecf2;border-top:3px solid '+col+';border-radius:10px;box-shadow:0 1px 3px rgba(16,24,40,0.08);"><tr><td height="92" valign="middle" style="padding:11px 13px;height:92px;"><div style="font-family:'+FONT+';font-size:9.5px;font-weight:800;color:#5b6b7f;text-transform:uppercase;">'+label+'</div><div style="margin:6px 0 2px;white-space:nowrap;font-family:'+FONT+';font-size:'+(vs||24)+'px;font-weight:800;color:'+col+';">'+val+'</div><div style="font-family:'+FONT+';font-size:11px;font-weight:700;color:'+TEAL+';white-space:nowrap;">'+sub+'</div></td></tr></table>'; }
+function buildPersonal(p,hist){
   const fil=p.items.slice().sort((a,b2)=>(b2.age||0)-(a.age||0));
   const n=fil.length, totv=fil.reduce((a,it)=>a+it.value,0);
   const prn=fil.filter(it=>it.doc!=='PO').length, pon=n-prn;
@@ -387,21 +394,27 @@ function buildPersonal(p){
   const CLIENT_STEP='Unit prices updated in PR lines';
   const pst=it=>it.stage==='Operations to Confirm'?(String(it.raw['Step name']||'').trim()===CLIENT_STEP?'Pending Client':'Pending Internal'):it.stage;
   const xfil=fil.map(it=>Object.assign({},it,{stage:pst(it)}));
-  const G=12, cw=Math.floor((PW-G*3)/4);
+  const G=12, TW=268, cw=Math.floor((PW-G*3-TW)/3);
   const gutter='<td width="'+G+'" style="width:'+G+'px;font-size:6px;line-height:6px;mso-line-height-rule:exactly;">&#160;</td>';
-  const defs=[['Items pending',String(n),'PR '+prn+' &#183; PO '+pon,'#3b82f6','#eff5ff',24],
-              ['Total value','AED '+money(totv),'across your queue','#0f766e','#ebfbf7',19],
-              ['Oldest item',oldAge+'d',esc(old?String(old.ref):'-'),'#dc2626','#fef2f2',24],
-              ['Past 7-day SLA',String(br),'of '+n+' item'+(n===1?'':'s'),'#f59e0b','#fff9ec',24]];
-  const cardsHtml='<table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:separate;"><tr>'+defs.map((c,i)=>'<td width="'+cw+'" valign="top" style="width:'+cw+'px;">'+pcard(c[0],c[1],c[2],c[3],c[4],c[5])+'</td>'+(i<defs.length-1?gutter:'')).join('')+'</tr></table><div style="height:'+G+'px;font-size:'+G+'px;line-height:'+G+'px;">&#160;</div>';
+  // First card = 3-day pending trend (11th / 12th / Today); Total value, Oldest, SLA cards stay.
+  const myCount=snap=>{ const e=groupByOwner(personalPool(snap)).find(x=>x.key===p.key); return e?e.items.length:0; };
+  const trendCard=tcard('Items pending &#8212; 3 days',trendCols(hist,myCount,n),'#3b82f6','PR '+prn+' &#183; PO '+pon);
+  const defs=[['Total value','AED '+money(totv),'across your queue','#0f766e','#ebfbf7',17],
+              ['Oldest item',oldAge+'d',esc(old?String(old.ref):'-'),'#dc2626','#fef2f2',22],
+              ['Past 7-day SLA',String(br),'of '+n+' item'+(n===1?'':'s'),'#f59e0b','#fff9ec',22]];
+  const cardsHtml='<table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:separate;"><tr><td width="'+TW+'" valign="top" style="width:'+TW+'px;">'+trendCard+'</td>'+gutter+defs.map((c,i)=>'<td width="'+cw+'" valign="top" style="width:'+cw+'px;">'+pcard(c[0],c[1],c[2],c[3],c[4],c[5])+'</td>'+(i<defs.length-1?gutter:'')).join('')+'</tr></table><div style="height:'+G+'px;font-size:'+G+'px;line-height:'+G+'px;">&#160;</div>';
   // Stage cards row — merged per STAGE (no PR/PO duplicates; doc split already shown on "Items pending").
   // Rendered only when the person has MORE than one stage; a single redundant stage card is dropped.
   const sagg={}; for(const it of xfil){ const x=sagg[it.stage]||(sagg[it.stage]={n:0,sum:0,c:0,amt:0}); x.n++; x.amt+=it.value; if(it.age!=null){x.sum+=it.age;x.c++;} }
   const SORD=['Re-Assigned/Rejected','Pending Internal','Pending Client','Procurement','Dep Managers','Finance'];
   const sl=SORD.filter(s=>sagg[s]).concat(Object.keys(sagg).filter(s=>!SORD.includes(s)));
-  const scard2=(bk,x)=>{ const a=x.c?(x.sum/x.c):0; return '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;background:'+(GRAD[bk]||'#f6f8fb')+';border:1px solid #e8ecf2;border-top:3px solid '+(COLOR[bk]||NAVY)+';border-radius:10px;box-shadow:0 1px 3px rgba(16,24,40,0.08);"><tr><td style="padding:11px 13px;"><div style="font-family:'+FONT+';font-size:9.5px;font-weight:800;color:#5b6b7f;text-transform:uppercase;">'+esc(bk)+'</div><div style="margin:6px 0 2px;white-space:nowrap;"><span style="font-family:'+FONT+';font-size:24px;font-weight:800;color:'+(COLOR[bk]||NAVY)+';">'+x.n+'</span><span style="font-family:'+FONT+';font-size:12px;font-weight:800;color:'+RED+';"> ('+a.toFixed(1)+'d)</span></div><div style="font-family:'+FONT+';font-size:11px;font-weight:700;color:'+TEAL+';">AED '+money(x.amt)+'</div></td></tr></table>'; };
+  // Per-stage 3-day history for THIS person (vertical rows inside each stage card).
+  const hdays=histDayList(); const histStage={};
+  for(const hd of hdays){ if(hist&&hist[hd.ymd]){ const e2=groupByOwner(personalPool(hist[hd.ymd])).find(x=>x.key===p.key); const m={}; if(e2){ for(const it2 of e2.items){ const s2=pst(it2); m[s2]=(m[s2]||0)+1; } } histStage[hd.ymd]=m; } }
+  const strFn=s=>hdays.map(hd=>({lab:hd.lab,n:histStage[hd.ymd]?String(histStage[hd.ymd][s]||0):'&#8211;'}));
+  const scard2=(bk,x,tr)=>{ const a=x.c?(x.sum/x.c):0; return '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;background:'+(GRAD[bk]||'#f6f8fb')+';border:1px solid #e8ecf2;border-top:3px solid '+(COLOR[bk]||NAVY)+';border-radius:10px;box-shadow:0 1px 3px rgba(16,24,40,0.08);"><tr><td style="padding:11px 13px;"><div style="font-family:'+FONT+';font-size:9.5px;font-weight:800;color:#5b6b7f;text-transform:uppercase;">'+esc(bk)+'</div><div style="margin:6px 0 2px;white-space:nowrap;"><span style="font-family:'+FONT+';font-size:24px;font-weight:800;color:'+(COLOR[bk]||NAVY)+';">'+x.n+'</span><span style="font-family:'+FONT+';font-size:12px;font-weight:800;color:'+RED+';"> ('+a.toFixed(1)+'d)</span>'+deltaBadge(tr,x.n)+'</div><div style="font-family:'+FONT+';font-size:11px;font-weight:700;color:'+TEAL+';">AED '+money(x.amt)+'</div>'+histLine(tr)+'</td></tr></table>'; };
   const cw2=Math.min(200,Math.floor((PW-G*Math.max(0,sl.length-1))/Math.max(1,sl.length)));
-  const stageCards=sl.length>1?'<table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:separate;"><tr>'+sl.map((s,i)=>'<td width="'+cw2+'" valign="top" style="width:'+cw2+'px;">'+scard2(s,sagg[s])+'</td>'+(i<sl.length-1?gutter:'')).join('')+'</tr></table><div style="height:'+G+'px;font-size:'+G+'px;line-height:'+G+'px;">&#160;</div>':'';
+  const stageCards=sl.length>1?'<table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:separate;"><tr>'+sl.map((s,i)=>'<td width="'+cw2+'" valign="top" style="width:'+cw2+'px;">'+scard2(s,sagg[s],strFn(s))+'</td>'+(i<sl.length-1?gutter:'')).join('')+'</tr></table><div style="height:'+G+'px;font-size:'+G+'px;line-height:'+G+'px;">&#160;</div>':'';
   // Body table: Pending-Client items stay OUT (they are with the client) — cards + attached Excel only.
   const tfil=xfil.filter(it=>it.stage!=='Pending Client');
   const clientN=n-tfil.length;
@@ -478,6 +491,55 @@ async function sendDivision(out, context){
 async function fetchXlsx(url){ const r=await fetch(url+(url.includes('?')?'&':'?')+'t='+Date.now()); if(!r.ok) throw new Error('fetch '+r.status+' '+url); return parseXlsx(Buffer.from(await r.arrayBuffer())); }
 async function loadItems(){ const [prRows,poRows]=await Promise.all([fetchXlsx(PR_URL),fetchXlsx(PO_URL)]); return buildItems(prRows,poRows); }
 
+/* ---- 3-day trend: the dashboard repo commits pr/po.xlsx daily, so git history IS the snapshot archive.
+ * Fetch the latest commit on/before each of the last 2 Dubai days and rebuild items with the same logic. ---- */
+const GH_HIST_REPO='Strive-Services-Group/PR-PO-Pipeline-Dashboard';
+function dubaiYmd(d){ const x=new Date(d.getTime()+4*3600*1000); return x.getUTCFullYear()+'-'+String(x.getUTCMonth()+1).padStart(2,'0')+'-'+String(x.getUTCDate()).padStart(2,'0'); }
+async function historyItems(){
+  const out={};
+  try{
+    const h={'User-Agent':'prpo-email','Accept':'application/vnd.github+json'}; if(process.env.GH_TOKEN) h.Authorization='Bearer '+process.env.GH_TOKEN;
+    const r=await fetch('https://api.github.com/repos/'+GH_HIST_REPO+'/commits?path=pr.xlsx&per_page=20',{headers:h});
+    if(!r.ok) throw new Error('gh commits '+r.status);
+    const commits=await r.json();
+    for(let i=2;i>=1;i--){
+      const ymd=dubaiYmd(new Date(Date.now()-i*86400000));
+      try{
+        const c=commits.find(c2=>dubaiYmd(new Date(c2.commit.committer.date))<=ymd);
+        if(!c) continue;
+        const base='https://raw.githubusercontent.com/'+GH_HIST_REPO+'/'+c.sha+'/';
+        const [pr,po]=await Promise.all([fetchXlsx(base+'pr.xlsx'),fetchXlsx(base+'po.xlsx')]);
+        out[ymd]=buildItems(pr,po);
+      }catch(e){ /* that day unavailable -> card shows a dash */ }
+    }
+  }catch(e){ /* history entirely unavailable -> cards show today only */ }
+  return out;
+}
+const MON3=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+function histDayList(){ const l=[]; for(let i=2;i>=1;i--){ const ymd=dubaiYmd(new Date(Date.now()-i*86400000)); const d=new Date(ymd+'T00:00:00Z'); l.push({ymd,lab:d.getUTCDate()+' '+MON3[d.getUTCMonth()]}); } return l; }
+// History footer line inside a stage card: thin divider + "11 Aug 19 · 12 Aug 19" (muted, one line).
+function histLine(tr){ if(!tr||!tr.length) return ''; return '<div style="border-top:1px solid rgba(20,49,94,0.10);margin:8px 0 0;padding:5px 0 0;font-family:'+FONT+';font-size:9.5px;font-weight:700;color:#8795a9;white-space:nowrap;">'+tr.map(r=>r.lab+' <b style="font-size:14px;color:#33415c;">'+r.n+'</b>').join(' &#160;&#183;&#160; ')+'</div>'; }
+// ▲/▼ badge on today's number vs yesterday (green when the queue went DOWN).
+function deltaBadge(tr,todayN){ if(!tr||!tr.length) return ''; const y=Number(tr[tr.length-1].n); if(!isFinite(y)) return ''; const d=todayN-y; if(!d) return ''; const up=d>0; return ' <span style="font-family:'+FONT+';font-size:11px;font-weight:800;color:'+(up?'#b91c1c':'#16794a')+';">'+(up?'&#9650;':'&#9660;')+Math.abs(d)+'</span>'; }
+function trendCols(hist,countFn,todayN){
+  const cols=[];
+  for(let i=2;i>=1;i--){
+    const ymd=dubaiYmd(new Date(Date.now()-i*86400000));
+    const d=new Date(ymd+'T00:00:00Z'); const lab=d.getUTCDate()+' '+MON3[d.getUTCMonth()];
+    let n='&#8211;'; if(hist&&hist[ymd]){ try{ n=String(countFn(hist[ymd])); }catch(e){} }
+    cols.push({lab,n});
+  }
+  cols.push({lab:'Today',n:String(todayN),em:true});
+  return cols;
+}
+function tcard(label,cols,accent,foot){
+  const cells=cols.map((c,i)=>'<td width="'+Math.floor(100/cols.length)+'%" align="center" valign="middle" style="padding:3px 4px;'+(i>0?'border-left:1px solid #e8edf4;':'')+'">'
+    +'<div style="font-family:'+FONT+';font-size:8.5px;font-weight:800;color:#8795a9;text-transform:uppercase;white-space:nowrap;">'+c.lab+'</div>'
+    +'<div style="font-family:'+FONT+';font-size:'+(c.em?'24':'22')+'px;font-weight:800;color:'+(c.em?accent:'#33415c')+';white-space:nowrap;margin-top:2px;">'+c.n+(c.em?deltaBadge(cols.slice(0,-1),Number(c.n)):'')+'</div>'
+    +'</td>').join('');
+  return '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;background:#ffffff;border:1px solid #e8ecf2;border-top:3px solid '+accent+';border-radius:10px;box-shadow:0 1px 3px rgba(16,24,40,0.08);"><tr><td height="92" valign="middle" style="padding:10px 12px;height:92px;"><div style="font-family:'+FONT+';font-size:9.5px;font-weight:800;color:#5b6b7f;text-transform:uppercase;">'+label+'</div><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:4px;"><tr>'+cells+'</tr></table>'+(foot?'<div style="border-top:1px solid #eef2f7;margin-top:6px;padding-top:5px;text-align:center;font-family:'+FONT+';font-size:9.5px;font-weight:700;color:'+TEAL+';white-space:nowrap;">'+foot+'</div>':'')+'</td></tr></table>';
+}
+
 /* ---- triggers ---- */
 // NCRONTAB runs in UTC: 06:00 UTC = 10:00 AM Dubai. 1-5 = Monday-Friday (no weekend sends). Do NOT put the Dubai hour here.
 app.timer('prpo-email-daily', { schedule:'0 0 6 * * 1-5', handler:async(timer,context)=>{
@@ -486,16 +548,18 @@ app.timer('prpo-email-daily', { schedule:'0 0 6 * * 1-5', handler:async(timer,co
   if(dow===0||dow===6){ context.log('prpo-email-daily: weekend ('+['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][dow]+') — skipped'); return; }
   if(hh!==10||mm>30){ context.log('prpo-email-daily: off-schedule fire at '+hh+':'+String(mm).padStart(2,'0')+' Dubai (restart catch-up) — skipped'); return; }
   const items=await loadItems();
-  for(const cfg of DIVS){ if(cfg.send===false) continue; try{ await sendDivision(buildDivision(cfg,items),context); }catch(e){ context.error('prpo '+cfg.key+' FAILED: '+e.message); } }
-  for(const p of groupByOwner(personalPool(items))){ try{ await sendPersonal(buildPersonal(p),context); }catch(e){ context.error('prpo personal '+p.user+' FAILED: '+e.message); } }
+  const hist=await historyItems();
+  for(const cfg of DIVS){ if(cfg.send===false) continue; try{ await sendDivision(buildDivision(cfg,items,hist),context); }catch(e){ context.error('prpo '+cfg.key+' FAILED: '+e.message); } }
+  for(const p of groupByOwner(personalPool(items))){ try{ await sendPersonal(buildPersonal(p,hist),context); }catch(e){ context.error('prpo personal '+p.user+' FAILED: '+e.message); } }
 }});
 app.http('prpo-email', { methods:['GET','OPTIONS'], authLevel:'function', route:'prpo-email', handler:async(request,context)=>{
   try{
     const url=new URL(request.url); const dk=url.searchParams.get('division'); const pk=url.searchParams.get('person');
     const wantSend=url.searchParams.get('send')==='1'; const sendAll=wantSend&&!dk&&!pk&&url.searchParams.get('personal')!=='1';
     const items=await loadItems();
+    const hist=await historyItems();
     if(dk){ const cfg=DIVS.find(d=>d.key===dk); if(!cfg) return {status:400,jsonBody:{error:'unknown division; use procurement|invoicing|ops_hm|ops_all'}};
-      const out=buildDivision(cfg,items);
+      const out=buildDivision(cfg,items,hist);
       if(url.searchParams.get('format')==='html') return {status:200,headers:{'Content-Type':'text/html; charset=utf-8'},body:out.html};
       if(url.searchParams.get('debug')==='1') return {status:200,jsonBody:{division:dk,count:out.count,value:Math.round(out.value),retired:cfg.send===false}};
       if(wantSend){ if(cfg.send===false) return {status:400,jsonBody:{division:dk,sent:false,reason:'retired — replaced by personal emails'}}; const s=await sendDivision(out,context); return {status:200,jsonBody:{division:dk,...s}}; }
@@ -503,19 +567,19 @@ app.http('prpo-email', { methods:['GET','OPTIONS'], authLevel:'function', route:
     }
     if(pk){ const p=groupByOwner(personalPool(items)).find(e=>e.key===_norm(pk));
       if(!p) return {status:404,jsonBody:{error:'no pending items for this user',user:pk,people:groupByOwner(personalPool(items)).map(e=>e.user)}};
-      const out=buildPersonal(p);
+      const out=buildPersonal(p,hist);
       if(url.searchParams.get('format')==='html') return {status:200,headers:{'Content-Type':'text/html; charset=utf-8'},body:out.html};
       if(wantSend){ const s=await sendPersonal(out,context); return {status:200,jsonBody:s}; }
       return {status:200,jsonBody:{user:out.user,email:userEmailMap()[out.key]||null,count:out.count,value:Math.round(out.value)}};
     }
     if(url.searchParams.get('personal')==='1'){ const map=userEmailMap(); const people=[];
-      for(const p of groupByOwner(personalPool(items))){ const out=buildPersonal(p); let s={sent:false}; if(wantSend) s=await sendPersonal(out,context); people.push({user:p.user,email:map[p.key]||null,count:out.count,value:Math.round(out.value),...s}); }
+      for(const p of groupByOwner(personalPool(items))){ const out=buildPersonal(p,hist); let s={sent:false}; if(wantSend) s=await sendPersonal(out,context); people.push({user:p.user,email:map[p.key]||null,count:out.count,value:Math.round(out.value),...s}); }
       return {status:200,jsonBody:{testMode:(process.env.PRPO_PERSONAL_TEST||'1')!=='0',sent:wantSend,people}};
     }
-    const summary=[]; for(const cfg of DIVS){ if(cfg.send===false) continue; const out=buildDivision(cfg,items); let s={sent:false}; if(sendAll) s=await sendDivision(out,context); summary.push({division:cfg.key,count:out.count,value:Math.round(out.value),...s}); }
-    const people=[]; for(const p of groupByOwner(personalPool(items))){ const out=buildPersonal(p); let s={sent:false}; if(sendAll) s=await sendPersonal(out,context); people.push({user:p.user,count:out.count,value:Math.round(out.value),...s}); }
+    const summary=[]; for(const cfg of DIVS){ if(cfg.send===false) continue; const out=buildDivision(cfg,items,hist); let s={sent:false}; if(sendAll) s=await sendDivision(out,context); summary.push({division:cfg.key,count:out.count,value:Math.round(out.value),...s}); }
+    const people=[]; for(const p of groupByOwner(personalPool(items))){ const out=buildPersonal(p,hist); let s={sent:false}; if(sendAll) s=await sendPersonal(out,context); people.push({user:p.user,count:out.count,value:Math.round(out.value),...s}); }
     return {status:200,jsonBody:{sentAll:sendAll,testMode:(process.env.PRPO_PERSONAL_TEST||'1')!=='0',divisions:summary,people}};
   }catch(e){ context.error('prpo-email failed:',e); return {status:500,jsonBody:{error:e.message}}; }
 }});
 
-module.exports = { buildItems, buildDivision, buildXlsxBase64, parseXlsx, DIVS, personalPool, groupByOwner, buildPersonal, userEmailMap };
+module.exports = { buildItems, buildDivision, buildXlsxBase64, parseXlsx, DIVS, personalPool, groupByOwner, buildPersonal, userEmailMap, historyItems };
