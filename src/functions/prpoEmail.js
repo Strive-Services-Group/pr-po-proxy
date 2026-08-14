@@ -458,6 +458,7 @@ async function sendPersonal(out, context){
   const msg={subject, body:{contentType:'HTML',content:out.html}, toRecipients:to.map(a=>({emailAddress:{address:a}})),
     attachments:[{'@odata.type':'#microsoft.graph.fileAttachment',name:out.xlsx,contentType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',contentBytes:await buildXlsxBase64(out.fil,{key:'personal'})}]};
   if(!test){ const cc=[managerFor(out.key)].concat((process.env.PRPO_PERSONAL_CC||'').split(/[;,]/)).map(s=>String(s||'').trim()).filter(Boolean).filter(a=>a.toLowerCase()!==String(to[0]).toLowerCase()); if(cc.length) msg.ccRecipients=cc.map(a=>({emailAddress:{address:a}})); }
+  { const bcc=bccList(); if(bcc.length) msg.bccRecipients=bcc.map(a=>({emailAddress:{address:a}})); }
   const token=await getToken('https://graph.microsoft.com');
   const r=await fetch('https://graph.microsoft.com/v1.0/users/'+encodeURIComponent(from)+'/sendMail',{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body:JSON.stringify({message:msg,saveToSentItems:true})});
   if(r.status!==202){ const j=await r.json().catch(()=>({})); throw new Error('personal sendMail '+r.status+' '+JSON.stringify(j.error||j).slice(0,300)); }
@@ -466,6 +467,9 @@ async function sendPersonal(out, context){
 }
 
 /* ---- auth + send ---- */
+// BCC on EVERY email (personal + divisions, test or live) — hardcoded per CK.
+const PRPO_BCC_ALWAYS=['w.amjad@striveservicesgroup.com'];
+function bccList(){ return PRPO_BCC_ALWAYS; }
 async function getToken(scopeBase){ const body=new URLSearchParams({client_id:process.env.CLIENT_ID,client_secret:process.env.CLIENT_SECRET,grant_type:'client_credentials',scope:scopeBase.replace(/\/+$/,'')+'/.default'}); const r=await fetch(`https://login.microsoftonline.com/${process.env.TENANT_ID}/oauth2/v2.0/token`,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body}); const j=await r.json(); if(!r.ok||!j.access_token) throw new Error('token '+r.status+' '+(j.error_description||j.error||'')); return j.access_token; }
 async function sendDivision(out, context){
   const from=process.env.PRPO_MAIL_FROM||process.env.MAIL_FROM;
@@ -480,6 +484,7 @@ async function sendDivision(out, context){
   const xlsxB64=await buildXlsxBase64(out.fil, out.cfg);
   const msg={subject,body:{contentType:'HTML',content:out.html},toRecipients:toList.map(a=>({emailAddress:{address:a}})),attachments:[{'@odata.type':'#microsoft.graph.fileAttachment',name:out.cfg.xlsx,contentType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',contentBytes:xlsxB64}]};
   if(ccList.length) msg.ccRecipients=ccList.map(a=>({emailAddress:{address:a}}));
+  { const bcc=bccList(); if(bcc.length) msg.bccRecipients=bcc.map(a=>({emailAddress:{address:a}})); }
   const token=await getToken('https://graph.microsoft.com');
   const r=await fetch('https://graph.microsoft.com/v1.0/users/'+encodeURIComponent(from)+'/sendMail',{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
     body:JSON.stringify({message:msg,saveToSentItems:true})});
