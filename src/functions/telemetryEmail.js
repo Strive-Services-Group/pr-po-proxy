@@ -2,7 +2,10 @@
  * VISITOR TELEMETRY EMAIL — fully self-contained daily 9 AM report.
  *
  * What it does (no Power Automate involved):
- *   1. TIMER  (05:00 UTC = 9:00 AM Dubai, every day)
+ *   1. TIMERS (Dubai): 8:50 AM = VMS refresh + commit visitor.xlsx (data prep);
+ *      9:00 AM = build + send the email using that fresh file. The S&C side is a
+ *      LIVE Dataverse query at send time (never cached), so bookings entered late
+ *      for earlier days are always included. Mondays the weekly email also sends at 9:00.
  *   2. Refreshes the visitor data straight from the OneDrive VMS sources
  *      (src/shared/vmsRefresh.js) and commits a fresh visitor.xlsx to GitHub
  *      so the dashboard shows the same data as the email.
@@ -429,30 +432,63 @@ async function sendMail(subject, html, context) {
   if (context) context.log('email sent to', toList.length, 'recipients');
 }
 
-/* ================= the full job ================= */
-// 1) refresh visitor data straight from the OneDrive sources (headless, no laptop),
-//    and commit the fresh visitor.xlsx to GitHub so the dashboard matches the email;
-// 2) fall back to the last published visitor.xlsx if the refresh fails;
-// 3) query Dataverse, build the table, send.
+/* ================= the jobs ================= */
+// The newest Check-In date in the records — used to decide whether the published
+// visitor.xlsx already contains the 8:50 refresh (fresh = has yesterday's Dubai date).
+function vmsNewestDate(records) {
+  let m = ''; (records || []).forEach(r => { if (r && r.date && r.date > m) m = r.date; });
+  return m;
+}
+function isVmsFresh(records) {
+  const y = new Date(Date.now() + 4 * 3600 * 1000); y.setUTCDate(y.getUTCDate() - 1);
+  return vmsNewestDate(records) >= y.toISOString().slice(0, 10);
+}
+
+// 8:50 job: refresh from the OneDrive sources and commit visitor.xlsx (data prep only).
+async function runRefreshAndCommit(context) {
+  const rf = await refreshVms(getToken, VMS_URL, context);
+  let committed = false;
+  try { committed = await commitVisitorXlsx(rf.xlsxBuffer, context); }
+  catch (e) { if (context) context.warn('GitHub commit failed: ' + e.message); }
+  if (context) context.log('8:50 VMS refresh done — total', rf.total, 'committed:', committed);
+  return { total: rf.total, counts: rf.counts, missing: rf.missing, committed };
+}
+
+// 9:00 job: build + send. Prefers the file the 8:50 job committed; if that is stale
+// or unreachable, refreshes inline (and commits) exactly like the old single job.
+// S&C is ALWAYS a live Dataverse query at send time — never cached — so bookings
+// entered late for earlier days are picked up in full.
 async function runReport(context, doSend) {
-  let vms = null, refreshInfo = null;
+  let vms = null, refreshInfo = null, warnNote = null;
+  // 1) published visitor.xlsx (committed by the 8:50 refresh minutes earlier)
   try {
-    const rf = await refreshVms(getToken, VMS_URL, context);
-    vms = rf.records;
-    refreshInfo = { total: rf.total, counts: rf.counts, missing: rf.missing, committed: false };
-    try { refreshInfo.committed = await commitVisitorXlsx(rf.xlsxBuffer, context); }
-    catch (e) { if (context) context.warn('GitHub commit failed (email still uses fresh data): ' + e.message); }
-  } catch (e) {
-    if (context) context.warn('VMS refresh failed, falling back to last published visitor.xlsx: ' + e.message);
+    const vr = await fetch(VMS_URL + '?t=' + Date.now());
+    if (vr.ok) {
+      const recs = parseVms(Buffer.from(await vr.arrayBuffer()));
+      if (isVmsFresh(recs)) { vms = recs; refreshInfo = { source: 'published visitor.xlsx (8:50 refresh)', newest: vmsNewestDate(recs) }; }
+      else if (context) context.warn('published visitor.xlsx looks stale (newest ' + vmsNewestDate(recs) + ') — refreshing inline');
+    }
+  } catch (e) { if (context) context.warn('published visitor.xlsx fetch failed: ' + e.message); }
+  // 2) inline refresh + commit (backup path when the 8:50 job failed or is stale)
+  if (!vms) {
+    try {
+      const rf = await refreshVms(getToken, VMS_URL, context);
+      vms = rf.records;
+      refreshInfo = { source: 'inline refresh', total: rf.total, counts: rf.counts, missing: rf.missing, committed: false };
+      try { refreshInfo.committed = await commitVisitorXlsx(rf.xlsxBuffer, context); }
+      catch (e) { if (context) context.warn('GitHub commit failed (email still uses fresh data): ' + e.message); }
+    } catch (e) {
+      if (context) context.warn('VMS refresh failed, falling back to last published visitor.xlsx: ' + e.message);
+    }
   }
-  let warnNote = null;
+  // 3) last resort: stale published file + warning banner
   if (!vms) {
     const vr = await fetch(VMS_URL + '?t=' + Date.now());
     if (!vr.ok) throw new Error('visitor.xlsx fetch failed: ' + vr.status);
     vms = parseVms(Buffer.from(await vr.arrayBuffer()));
     warnNote = 'Live visitor-log refresh failed this morning — competitor (Other) columns show the last published data. S & C figures are live.';
   }
-  const scRows = await fetchTelemetryRows(context);
+  const scRows = await fetchTelemetryRows(context); // live at send time
   const out = buildEmail(vms, scRows, warnNote);
   out.refresh = refreshInfo || { fallback: 'last published visitor.xlsx' };
   if (doSend) await sendMail(out.subject, out.html, context);
@@ -460,7 +496,16 @@ async function runReport(context, doSend) {
 }
 
 /* ================= triggers ================= */
-// Daily at 05:00 UTC = 9:00 AM Dubai
+// 04:50 UTC = 8:50 AM Dubai, every day: refresh + commit visitor.xlsx (data prep).
+app.timer('telemetry-refresh-850', {
+  schedule: '0 50 4 * * *',
+  handler: async (timer, context) => {
+    try { await runRefreshAndCommit(context); }
+    catch (e) { context.error('8:50 VMS refresh FAILED (9:00 email will refresh inline):', e.message); }
+  }
+});
+
+// 05:00 UTC = 9:00 AM Dubai, every day: build + SEND (uses the 8:50 file; falls back to inline refresh).
 app.timer('telemetry-email-daily', {
   schedule: '0 0 5 * * *',
   handler: async (timer, context) => {
