@@ -229,17 +229,22 @@ function buildWeeklyEmail(vmsRecords, scRows, warnNote) {
       + '<span style="color:#B6C0CE;"> / </span><span style="color:#64748B;">' + ot + '</span>' + pill(sc, ot) + '</td>';
   }
 
+  // FIXED pixel widths — desktop Outlook (Word engine) ignores % widths +
+  // table-layout:fixed and stretches tables to the reading pane, which wrecked
+  // the layout. Same technique as the daily email: width attributes everywhere.
+  const W_WEEK = 150, W_DAY = 92, W_TOT = 96;
+  const W_TABLE = W_WEEK + 7 * W_DAY + W_TOT;   // 890
   let inner = '';
   TELE_PROJECTS.forEach(p => {
     const pc = PROJ_COL[p][0], pt = PROJ_COL[p][1];
-    inner += '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:20px;">'
-      + '<tr><td style="background:' + pt + ';border:1px solid ' + pc + '33;border-left:6px solid ' + pc + ';border-radius:8px;padding:10px 14px;">'
+    inner += '<table role="presentation" width="' + W_TABLE + '" cellpadding="0" cellspacing="0" style="width:' + W_TABLE + 'px;margin-top:20px;">'
+      + '<tr><td bgcolor="' + pt + '" style="background:' + pt + ';border:1px solid #E2E8F0;border-left:6px solid ' + pc + ';border-radius:8px;padding:10px 14px;">'
       + '<span style="font-family:' + FONT + ';font-size:15px;font-weight:800;color:' + pc + ';">' + PROJ_ICON[p] + ' ' + escHtml(TELE_PROJ_LBL[p]) + '</span>'
       + '<span style="font-family:' + FONT + ';font-weight:600;color:#71809B;font-size:12px;"> &#183; ' + (PROJ_UNITS[p] || 0) + ' units</span></td></tr></table>';
-    inner += '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin-top:8px;table-layout:fixed;">';
-    inner += '<tr><th style="' + BD + 'border-left:4px solid ' + pc + ';background:' + pt + ';font-family:' + FONT + ';font-size:10px;color:' + pc + ';letter-spacing:.8px;padding:7px 8px;text-align:left;width:150px;">WEEK</th>';
-    DAYS.forEach(d => { inner += '<th style="' + BD + 'background:' + pt + ';font-family:' + FONT + ';font-size:10px;color:' + pc + ';letter-spacing:.8px;padding:7px 3px;width:92px;">' + d + '</th>'; });
-    inner += '<th style="' + BD + 'background:' + pt + ';font-family:' + FONT + ';font-size:10px;color:' + pc + ';letter-spacing:.8px;padding:7px 3px;width:96px;">TOTAL</th></tr>';
+    inner += '<table role="presentation" width="' + W_TABLE + '" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin-top:8px;table-layout:fixed;width:' + W_TABLE + 'px;">';
+    inner += '<tr><th width="' + W_WEEK + '" bgcolor="' + pt + '" style="' + BD + 'border-left:4px solid ' + pc + ';background:' + pt + ';font-family:' + FONT + ';font-size:10px;color:' + pc + ';letter-spacing:.8px;padding:7px 8px;text-align:left;width:' + W_WEEK + 'px;">WEEK</th>';
+    DAYS.forEach(d => { inner += '<th width="' + W_DAY + '" bgcolor="' + pt + '" style="' + BD + 'background:' + pt + ';font-family:' + FONT + ';font-size:10px;color:' + pc + ';letter-spacing:.8px;padding:7px 3px;text-align:center;width:' + W_DAY + 'px;">' + d + '</th>'; });
+    inner += '<th width="' + W_TOT + '" bgcolor="' + pt + '" style="' + BD + 'background:' + pt + ';font-family:' + FONT + ';font-size:10px;color:' + pc + ';letter-spacing:.8px;padding:7px 3px;text-align:center;width:' + W_TOT + 'px;">TOTAL</th></tr>';
     const P = agg[p] || {};
     SVCS.forEach(sv => {
       const key = sv[0], lbl = sv[1], accent = sv[2], tint = sv[3];
@@ -260,16 +265,17 @@ function buildWeeklyEmail(vmsRecords, scRows, warnNote) {
       });
     });
     inner += '</table>';
-    // full-width black separator after each project
-    inner += '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:20px;"><tr><td style="height:3px;background:#111827;font-size:0;line-height:0;border-radius:2px;">&nbsp;</td></tr></table>';
+    // full-width black separator after each project (fixed px width for Outlook desktop)
+    inner += '<table role="presentation" width="' + W_TABLE + '" cellpadding="0" cellspacing="0" style="width:' + W_TABLE + 'px;margin-top:20px;"><tr><td height="3" bgcolor="#111827" style="height:3px;background:#111827;font-size:0;line-height:0;">&nbsp;</td></tr></table>';
   });
 
   const nowDubai = new Date(Date.now() + 4 * 3600 * 1000);
   const stamp = nowDubai.toISOString().slice(0, 10) + ' ' + nowDubai.toISOString().slice(11, 16);
   const subject = 'Visitor Telemetry (Flagship Projects) - Weekly Days Comparison (' + fmtDM(weeks[3].mon) + ' - ' + fmtDM(weeks[0].sun) + ')';
+  const W_OUTER = W_TABLE + 48; // table + 24px padding each side
   const html =
     '<div style="font-family:' + FONT + ';color:#22303C;background:#EEF2F7;padding:16px;">'
-    + '<table role="presentation" width="1000" cellpadding="0" cellspacing="0" align="center">'
+    + '<table role="presentation" width="' + W_OUTER + '" cellpadding="0" cellspacing="0" align="center" style="width:' + W_OUTER + 'px;">'
     + '<tr><td bgcolor="#14315E" style="background:#14315E;border-radius:10px 10px 0 0;padding:18px 24px;">'
     + '<div style="font-family:' + FONT + ';font-size:17px;font-weight:800;color:#FFFFFF;letter-spacing:.3px;">&#128202; VISITOR TELEMETRY &mdash; WEEKLY DAYS COMPARISON</div>'
     + '<div style="font-family:' + FONT + ';font-size:12px;color:#C9D6EC;margin-top:5px;">Flagship projects &#183; last 4 weeks &#183; each cell = <b style="color:#FFFFFF;">S &amp; C</b> / Other (competitor) &#183; pill = our share % &#183; Dima excluded &#183; snapshot ' + stamp + ' (Dubai) &#183; <a href="' + DASHBOARD_URL + '" style="color:#9CC6FF;font-weight:700;">Open the Live Dashboard</a></div>'
