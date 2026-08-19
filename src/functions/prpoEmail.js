@@ -358,10 +358,10 @@ const USER_MANAGER={
   "Shakir Ameer Bakhsh":"nasser.saman@candoo.ae",
   "shijil.c":"daniel.allen@striveservicesgroup.com",
   "it.solutions":"shehzad.jehangir@striveservicesgroup.com",
-  "Gokul.Krishna":"judhin.prabhakar@sahalahfm.com",
-  "roderick.red":"mohamed.ashraf@striveservicesgroup.com",
-  "Adnan.Ullah":"mohamed.ashraf@striveservicesgroup.com",
-  "Aparna.Pauly":"mohamed.ashraf@striveservicesgroup.com",
+  "Gokul.Krishna":"judhin.prabhakar@sahalahfm.com,lijo.p@sahalahfm.com", // PAC Approver -> CC PAC Managers (Judhin + Lijo)
+  "roderick.red":"mohamed.ashraf@striveservicesgroup.com,riyaz.n@striveservicesgroup.com",
+  "Adnan.Ullah":"mohamed.ashraf@striveservicesgroup.com,riyaz.n@striveservicesgroup.com",
+  "Aparna.Pauly":"mohamed.ashraf@striveservicesgroup.com,riyaz.n@striveservicesgroup.com",
   "Layusha.cleatus":"mohamed.ashraf@striveservicesgroup.com",
   "Riyaz.n":"mohamed.ashraf@striveservicesgroup.com",
   "pramod.c":"abdul.muqeet@sahalahfm.com",
@@ -457,7 +457,7 @@ async function sendPersonal(out, context){
   else { if(!real){ if(context) context.log('personal skip '+out.user+': no address mapped'); return {user:out.user,sent:false,reason:'no address mapped'}; } to=[real]; }
   const msg={subject, body:{contentType:'HTML',content:out.html}, toRecipients:to.map(a=>({emailAddress:{address:a}})),
     attachments:[{'@odata.type':'#microsoft.graph.fileAttachment',name:out.xlsx,contentType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',contentBytes:await buildXlsxBase64(out.fil,{key:'personal'})}]};
-  if(!test){ const cc=[managerFor(out.key)].concat((process.env.PRPO_PERSONAL_CC||'').split(/[;,]/)).map(s=>String(s||'').trim()).filter(Boolean).filter(a=>a.toLowerCase()!==String(to[0]).toLowerCase()); if(cc.length) msg.ccRecipients=cc.map(a=>({emailAddress:{address:a}})); }
+  if(!test){ const cc=String(managerFor(out.key)||'').split(/[;,]/).concat((process.env.PRPO_PERSONAL_CC||'').split(/[;,]/)).map(s=>String(s||'').trim()).filter(Boolean).filter(a=>a.toLowerCase()!==String(to[0]).toLowerCase()); if(cc.length) msg.ccRecipients=cc.map(a=>({emailAddress:{address:a}})); }
   { const bcc=bccList(); if(bcc.length) msg.bccRecipients=bcc.map(a=>({emailAddress:{address:a}})); }
   const token=await getToken('https://graph.microsoft.com');
   const r=await fetch('https://graph.microsoft.com/v1.0/users/'+encodeURIComponent(from)+'/sendMail',{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body:JSON.stringify({message:msg,saveToSentItems:true})});
