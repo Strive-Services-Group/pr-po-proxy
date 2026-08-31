@@ -9,7 +9,11 @@
  *
  * Sources (drive IDs found via SharePoint search, stable unless the OneDrive is recreated):
  *   - Balqis Security's OneDrive  (sec_balqis_sahalahfm_com):
- *       /Desktop/Pool and beach Records/DAILY CONTRACTORS RECORDS/Visitors Details Balqis Residence.xlsx
+ *       /Desktop/POOL2026/Pool and beach Records/DAILY CONTRACTORS RECORDS/Visitors Details Balqis Residence.xlsx
+ *       (a POOL2026 folder was inserted above "Pool and beach Records" on 27 Aug 2026, which
+ *        404'd the old hard-coded path for 5 days without anyone noticing — see fetchSource:
+ *        a path may now be a string OR an array of candidates, and if every candidate fails
+ *        the workbook is located by name search, so a folder move self-heals)
  *   - Abdul Muqeet's OneDrive     (abdul_muqeet_sahalahfm_com):
  *       /VMS-DATA FILES/VMS-TH8.xlsx, VMS-AL HASEER.xlsx, VMS-AL NABAT.xlsx,
  *       /VMS-DATA FILES/VMS-NORTH RESIDENCE.xlsx, VMS-SOUTH RESIDENCE.xlsx
@@ -35,7 +39,8 @@ const MUQEET_DRIVE = process.env.VMS_MUQEET_DRIVE || 'b!2jsyR69LVE63449EoxnFAaA1
 // column, which mislabelled all South visits as North). AL HASEER / AL NABAT keep the column
 // because it maps them to SHORELINE 7AND8; Balqis keeps it as before.
 const DEFAULT_SOURCES = [
-  ['BALQIS RESIDENCE', BALQIS_DRIVE, '/Desktop/Pool and beach Records/DAILY CONTRACTORS RECORDS/Visitors Details Balqis Residence.xlsx', null, false, false],
+  ['BALQIS RESIDENCE', BALQIS_DRIVE, ['/Desktop/POOL2026/Pool and beach Records/DAILY CONTRACTORS RECORDS/Visitors Details Balqis Residence.xlsx',
+                                     '/Desktop/Pool and beach Records/DAILY CONTRACTORS RECORDS/Visitors Details Balqis Residence.xlsx'], null, false, false],
   ['THE8', MUQEET_DRIVE, '/VMS-DATA FILES/VMS-TH8.xlsx', ["VMS-TH8-'26"], true, true],
   ['AL HASEER', MUQEET_DRIVE, '/VMS-DATA FILES/VMS-AL HASEER.xlsx', ["VMS-AL HASEER-'26"], true, false],
   ['AL NABAT', MUQEET_DRIVE, '/VMS-DATA FILES/VMS-AL NABAT.xlsx', ["VMS-AL NABAT-'26"], true, false],
@@ -61,6 +66,46 @@ async function graphDownload(driveId, path, token) {
     throw new Error('graph download ' + r.status + ' for ' + path + ' ' + JSON.stringify(j.error || {}).slice(0, 200));
   }
   return Buffer.from(await r.arrayBuffer());
+}
+
+/* ---- locate a workbook by name when its folder has been moved or renamed ----
+ * Building teams reorganise their OneDrive without telling anyone. Searching the drive for
+ * the file name recovers it wherever it landed; we download by item id so no path rebuild
+ * is needed, and log the new path so DEFAULT_SOURCES can be corrected at leisure. */
+async function graphFindByName(driveId, fileName, token) {
+  const q = fileName.replace(/'/g, "''");
+  const url = 'https://graph.microsoft.com/v1.0/drives/' + driveId + "/root/search(q='" + encodeURIComponent(q) + "')"
+    + '?$select=id,name,parentReference,lastModifiedDateTime&$top=50';
+  const r = await fetch(url, { headers: { Authorization: 'Bearer ' + token } });
+  if (!r.ok) throw new Error('graph search ' + r.status + ' for ' + fileName);
+  const j = await r.json();
+  const hits = (j.value || []).filter(x => x.name === fileName && !x.folder);
+  if (!hits.length) throw new Error('graph search found nothing named ' + fileName);
+  hits.sort((a, b) => String(b.lastModifiedDateTime || '').localeCompare(String(a.lastModifiedDateTime || '')));
+  return hits[0];
+}
+async function graphDownloadById(driveId, itemId, token) {
+  const r = await fetch('https://graph.microsoft.com/v1.0/drives/' + driveId + '/items/' + itemId + '/content',
+    { headers: { Authorization: 'Bearer ' + token } });
+  if (!r.ok) throw new Error('graph download by id ' + r.status + ' for item ' + itemId);
+  return Buffer.from(await r.arrayBuffer());
+}
+/* try every configured path, then fall back to a name search. Throws only if both fail,
+ * so the per-source catch still marks the project missing when the file is really gone. */
+async function fetchSource(driveId, paths, token, log) {
+  const list = Array.isArray(paths) ? paths : [paths];
+  const errs = [];
+  for (const cand of list) {
+    try { return { buf: await graphDownload(driveId, cand, token), path: cand }; }
+    catch (e) { errs.push(e.message); }
+  }
+  const fileName = String(list[0]).split('/').pop();
+  const hit = await graphFindByName(driveId, fileName, token);
+  const parent = (hit.parentReference && hit.parentReference.path) || '';
+  const found = String(parent).replace(/^.*root:/, '') + '/' + hit.name; // /drive/root:/a/b and /drives/{id}/root:/a/b both -> /a/b
+  log('  !! PATH MOVED: ' + fileName + ' not at configured path(s) [' + errs.join(' | ').slice(0, 200)
+    + '] — found by search at ' + found + '. Update DEFAULT_SOURCES / VMS_SOURCES.');
+  return { buf: await graphDownloadById(driveId, hit.id, token), path: found, movedFrom: list[0] };
 }
 
 /* ---- date cell -> {ymd, serial} | null (same rules as clean_vms.parse_date) ----
@@ -174,14 +219,17 @@ async function refreshVms(getToken, vmsUrlFallback, context) {
   const token = await getToken('https://graph.microsoft.com');
   let rows = [];
   const missing = [];
+  const moved = [];     // sources found somewhere other than their configured path
+  const stale = {};     // project -> last date we actually have, for sources that failed
   const perSource = {}; // diagnostics per source file (visible in ?refresh=1&dryrun=1)
   for (const [proj, driveId, path, sheets, dedupe, forceProject] of sources()) {
     try {
-      const buf = await graphDownload(driveId, path, token);
+      const got = await fetchSource(driveId, path, token, log);
       const info = {};
-      const cleaned = cleanSource(proj, buf, sheets, dedupe, log, info, forceProject);
+      const cleaned = cleanSource(proj, got.buf, sheets, dedupe, log, info, forceProject);
       let maxD = ''; cleaned.forEach(r => { if (r[7] > maxD) maxD = r[7]; });
-      perSource[proj] = { rows: cleaned.length, newestDate: maxD, bytes: info.bytes, sheets: info.sheets, matchedSheets: info.matchedSheets };
+      perSource[proj] = { rows: cleaned.length, newestDate: maxD, bytes: info.bytes, sheets: info.sheets, matchedSheets: info.matchedSheets, path: got.path };
+      if (got.movedFrom) { perSource[proj].movedFrom = got.movedFrom; moved.push(proj); }
       rows = rows.concat(cleaned);
     } catch (e) {
       log('  !! MISSING ' + proj + ': ' + e.message);
@@ -203,14 +251,25 @@ async function refreshVms(getToken, vmsUrlFallback, context) {
       const mergedBy = {};
       prevAll.forEach(r => {
         const p = String(r[6] || '').trim().toUpperCase();
-        if (!minNew[p] || r[7] < minNew[p]) { rows.push(r); mergedBy[p] = (mergedBy[p] || 0) + 1; }
+        if (!minNew[p] || r[7] < minNew[p]) {
+          rows.push(r); mergedBy[p] = (mergedBy[p] || 0) + 1;
+          if (!minNew[p] && (!stale[p] || r[7] > stale[p])) stale[p] = r[7]; // whole project is history
+        }
       });
       if (Object.keys(mergedBy).length) {
         log('  history merged from previous publish: ' + JSON.stringify(mergedBy));
-        Object.keys(mergedBy).forEach(p => { perSource[p + ' (history)'] = { rows: mergedBy[p] }; });
+        Object.keys(mergedBy).forEach(p => { perSource[p + ' (history)'] = { rows: mergedBy[p], staleSince: stale[p] || null }; });
       }
     }
   } catch (e) { log('  history merge failed: ' + e.message); }
+  // A source that failed to download is NOT a project with no visitors: every row above is
+  // last-publish history, so the totals stay plausible while silently frozen. Balqis sat like
+  // that for 5 days in Aug 2026. Say it out loud and hand the caller something to act on.
+  if (missing.length) {
+    log('  !! STALE PROJECTS: ' + missing.map(p => p + ' (carried forward, data ends ' + (stale[p] || 'unknown') + ')').join(', ')
+      + ' — these figures are NOT current.');
+  }
+  if (moved.length) log('  note: sources relocated since last config update: ' + moved.join(', '));
   if (!rows.length) throw new Error('VMS refresh produced 0 rows — keeping previous file');
 
   // build visitor.xlsx (sheet FINAL, same header). Dates are raw Excel serials with a
@@ -241,7 +300,7 @@ async function refreshVms(getToken, vmsUrlFallback, context) {
   const counts = {};
   records.forEach(r => { counts[r.project] = (counts[r.project] || 0) + 1; });
   log('VMS refresh: ' + rows.length + ' rows total', JSON.stringify(counts));
-  return { records, xlsxBuffer, counts, missing, total: rows.length, perSource };
+  return { records, xlsxBuffer, counts, missing, stale, moved, total: rows.length, perSource };
 }
 
 /* ---- commit visitor.xlsx to the dashboard repo (GitHub contents API) ---- */
