@@ -444,9 +444,19 @@ function vmsNewestDate(records) {
   let m = ''; (records || []).forEach(r => { if (r && r.date && r.date > m) m = r.date; });
   return m;
 }
+function vmsNewestDateFor(records, proj) {
+  let m = ''; (records || []).forEach(r => { if (r && r.date && r.project === proj && r.date > m) m = r.date; });
+  return m;
+}
 function isVmsFresh(records) {
   const y = new Date(Date.now() + 4 * 3600 * 1000); y.setUTCDate(y.getUTCDate() - 1);
-  return vmsNewestDate(records) >= y.toISOString().slice(0, 10);
+  const yi = y.toISOString().slice(0, 10);
+  // Overall freshness is not enough: Balqis comes live from the Visit Log list, so the
+  // published file can be globally fresh (other projects have yesterday) while Balqis
+  // still ends two days back — e.g. when the send runs before GitHub Pages has finished
+  // deploying the morning refresh commit. If Balqis is behind, refresh inline instead,
+  // so yesterday never shows "Not updated" in the email while the list has the data.
+  return vmsNewestDate(records) >= yi && vmsNewestDateFor(records, 'BALQIS RESIDENCE') >= yi;
 }
 
 // 8:50 job: refresh from the OneDrive sources and commit visitor.xlsx (data prep only).
