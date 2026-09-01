@@ -30,6 +30,10 @@
  */
 const XLSX = require('xlsx');
 
+// Balqis moved to a SharePoint list (Sahalah Visitor Log) on 1 Sep 2026; the OneDrive
+// workbook stays configured as an automatic fallback until the list is proven in prod.
+const BALQIS_SITE = process.env.VMS_BALQIS_SITE || 'ifares.sharepoint.com:/sites/SahalahVisitorLog';
+const BALQIS_LIST = process.env.VMS_BALQIS_LIST || 'Visit Log';
 const BALQIS_DRIVE = process.env.VMS_BALQIS_DRIVE || 'b!5ma3QhDyZ0GZsiXhkdXOuhs9QX6ol9RInUHGE6t7AIyt1DCpPIAcS6cBimNKf0JF';
 const MUQEET_DRIVE = process.env.VMS_MUQEET_DRIVE || 'b!2jsyR69LVE63449EoxnFAaA1OVzt3PxKqmAZ7NtQgKH9TivpAV8ORZN5aAEIpdJm';
 
@@ -39,8 +43,12 @@ const MUQEET_DRIVE = process.env.VMS_MUQEET_DRIVE || 'b!2jsyR69LVE63449EoxnFAaA1
 // column, which mislabelled all South visits as North). AL HASEER / AL NABAT keep the column
 // because it maps them to SHORELINE 7AND8; Balqis keeps it as before.
 const DEFAULT_SOURCES = [
-  ['BALQIS RESIDENCE', BALQIS_DRIVE, ['/Desktop/POOL2026/Pool and beach Records/DAILY CONTRACTORS RECORDS/Visitors Details Balqis Residence.xlsx',
-                                     '/Desktop/Pool and beach Records/DAILY CONTRACTORS RECORDS/Visitors Details Balqis Residence.xlsx'], null, false, false],
+  { kind: 'splist', project: 'BALQIS RESIDENCE', site: BALQIS_SITE, list: BALQIS_LIST,
+    only: 'BALQIS',            // the list is Sahalah-wide: keep Balqis rows only, the rest still come from Abdul's files
+    dedupe: false, forceProject: true,   // Balqis has never been de-duplicated (a company can legitimately re-visit a unit the same day); keep it that way
+    fallback: { driveId: BALQIS_DRIVE, sheets: null, dedupe: false, forceProject: false,
+                paths: ['/Desktop/POOL2026/Pool and beach Records/DAILY CONTRACTORS RECORDS/Visitors Details Balqis Residence.xlsx',
+                        '/Desktop/Pool and beach Records/DAILY CONTRACTORS RECORDS/Visitors Details Balqis Residence.xlsx'] } },
   ['THE8', MUQEET_DRIVE, '/VMS-DATA FILES/VMS-TH8.xlsx', ["VMS-TH8-'26"], true, true],
   ['AL HASEER', MUQEET_DRIVE, '/VMS-DATA FILES/VMS-AL HASEER.xlsx', ["VMS-AL HASEER-'26"], true, false],
   ['AL NABAT', MUQEET_DRIVE, '/VMS-DATA FILES/VMS-AL NABAT.xlsx', ["VMS-AL NABAT-'26"], true, false],
@@ -48,6 +56,14 @@ const DEFAULT_SOURCES = [
   ['SOUTH RESIDENCE', MUQEET_DRIVE, '/VMS-DATA FILES/VMS-SOUTH RESIDENCE.xlsx', ["VMS-SOUTH RESIDENCE-'26"], true, true],
   ['MAG 318', MUQEET_DRIVE, '/VMS-DATA FILES/VMS-MAG 318.xlsx', ["VMS-MAG 318-'26"], true, true]
 ];
+// a source is either the legacy tuple [proj, driveId, path, sheets, dedupe, forceProject]
+// or an object; normalise to an object so the loop below stays readable.
+function normalizeSource(s) {
+  if (Array.isArray(s)) {
+    return { kind: 'workbook', project: s[0], driveId: s[1], path: s[2], sheets: s[3], dedupe: s[4], forceProject: s[5] };
+  }
+  return Object.assign({ kind: 'workbook' }, s);
+}
 function sources() {
   try { if (process.env.VMS_SOURCES) return JSON.parse(process.env.VMS_SOURCES); } catch (e) {}
   return DEFAULT_SOURCES;
@@ -108,6 +124,93 @@ async function fetchSource(driveId, paths, token, log) {
   return { buf: await graphDownloadById(driveId, hit.id, token), path: found, movedFrom: list[0] };
 }
 
+/* ---- SharePoint list source (Balqis, from 1 Sep 2026) ----------------------
+ * Graph: resolve site -> list -> page the items with $expand=fields. Field keys come
+ * back as SharePoint INTERNAL names, which are not the display names and differ per
+ * column (Check_x0020_In_x0020_Date, CheckInDate, Check_x0020_In_x0020_Date0 after a
+ * rename...). So every lookup goes through nkey(): decode _xHHHH_ escapes, drop
+ * punctuation and case. A renamed or re-created column keeps resolving. */
+function nkey(s) {
+  return String(s == null ? '' : s)
+    .replace(/_x([0-9a-fA-F]{4})_/g, (mm, h) => String.fromCharCode(parseInt(h, 16)))
+    .replace(/[^A-Za-z0-9]/g, '')
+    .toUpperCase();
+}
+function fieldMap(f) { const m = {}; for (const k in f) m[nkey(k)] = f[k]; return m; }
+function pickField(m) {
+  for (let i = 1; i < arguments.length; i++) {
+    const v = m[nkey(arguments[i])];
+    if (v != null && String(v).trim() !== '') return v;
+  }
+  return '';
+}
+async function graphJson(url, token) {
+  const r = await fetch(url, { headers: { Authorization: 'Bearer ' + token, Accept: 'application/json' } });
+  if (!r.ok) {
+    const j = await r.json().catch(() => ({}));
+    throw new Error('graph ' + r.status + ' ' + url.replace('https://graph.microsoft.com/v1.0', '') + ' ' + JSON.stringify(j.error || {}).slice(0, 200));
+  }
+  return r.json();
+}
+/* Needs Graph application permission Sites.Read.All (or Sites.Selected granted on this
+ * site). Files.Read.All alone is NOT enough — a 403 here is the tell. */
+async function graphListRows(src, token, log) {
+  const G = 'https://graph.microsoft.com/v1.0';
+  const site = await graphJson(G + '/sites/' + src.site, token);
+  const lists = await graphJson(G + '/sites/' + site.id + '/lists?$select=id,name,displayName&$top=200', token);
+  const want = nkey(src.list);
+  const hit = (lists.value || []).find(l => nkey(l.displayName) === want || nkey(l.name) === want);
+  if (!hit) throw new Error('list "' + src.list + '" not found on ' + src.site + ' (lists seen: ' + (lists.value || []).map(l => l.displayName).join(', ').slice(0, 200) + ')');
+  let url = G + '/sites/' + site.id + '/lists/' + hit.id + '/items?$expand=fields&$top=500';
+  const items = []; let pages = 0;
+  while (url && pages < 400) {
+    const page = await graphJson(url, token);
+    (page.value || []).forEach(it => { if (it.fields) items.push(it.fields); });
+    url = page['@odata.nextLink']; pages++;
+  }
+  if (log) log('  ' + src.project + ': pulled ' + items.length + ' items from list "' + hit.displayName + '" (' + pages + ' page(s))');
+  return { items, listName: hit.displayName, sampleKeys: items.length ? Object.keys(items[0]).slice(0, 40) : [] };
+}
+/* Same keep/exclude rules as cleanSource, applied to list items instead of sheet rows. */
+function cleanListRows(proj, items, src, log, info) {
+  const out = []; const seen = new Set();
+  let dropped = 0, offProject = 0, timed = 0;
+  const only = src.only ? nkey(src.only) : null;
+  for (const f of items) {
+    const m = fieldMap(f);
+    const pur = String(pickField(m, 'Check In Purpose') || '').trim();
+    if (!KEEP.has(norm(pur))) continue;
+    if (String(pickField(m, 'Check In Type') || '').trim().toLowerCase() !== 'unit visit') continue;
+    let comp = String(pickField(m, 'Company Name') || '').trim();
+    if (/dima/i.test(comp)) continue; // Dima excluded everywhere
+    const bu = String(pickField(m, 'Building/ Unit', 'Building/Unit', 'Building') || '').trim();
+    const pnRaw = String(pickField(m, 'Project Name') || '').trim();
+    // the list covers all Sahalah projects; take only the one this source owns so the
+    // others keep coming from their own workbooks and nothing is counted twice
+    if (only && nkey(pnRaw).indexOf(only) < 0 && nkey(bu).indexOf(only) < 0) { offProject++; continue; }
+    const rawDate = pickField(m, 'Check In Date');
+    const date = parseDateCell(rawDate);
+    if (!date) { dropped++; continue; }
+    if (typeof rawDate === 'string' && /T(?!00:00)/.test(rawDate)) timed++;
+    comp = comp.toUpperCase();
+    const scope = String(pickField(m, 'Scope of work') || '').trim();
+    const unit = String(pickField(m, 'Unit') || '').trim();
+    const pn = src.forceProject ? proj : (pnRaw || proj);
+    if (src.dedupe) {
+      const key = date.ymd + '|' + norm(pur) + '|' + (unit || bu).toUpperCase() + '|' + comp;
+      if (seen.has(key)) continue;
+      seen.add(key);
+    }
+    out.push([date.serial, 'Unit Visit', pur, comp, scope, bu, pn, date.ymd]);
+  }
+  if (info) { info.items = items.length; info.otherProjectRows = offProject; }
+  if (log) {
+    log('  ' + proj + ': ' + out.length + ' rows (dropped ' + dropped + ', other-project ' + offProject + ')');
+    if (timed) log('  note: ' + timed + ' list rows carry a time of day on Check In Date; the UTC calendar date is used — check the day boundary if counts look shifted');
+  }
+  return out;
+}
+
 /* ---- date cell -> {ymd, serial} | null (same rules as clean_vms.parse_date) ----
  * serial = Excel date serial number (1900 system). We keep serials, never JS Date
  * objects, so the output workbook is byte-stable regardless of server timezone. */
@@ -125,9 +228,15 @@ function parseDateCell(v) {
     y = v.getUTCFullYear(); m = v.getUTCMonth() + 1; d = v.getUTCDate();
     hh = v.getUTCHours(); mi = v.getUTCMinutes(); ss = v.getUTCSeconds();
   } else if (typeof v === 'string' && v.trim()) {
-    const mm = v.trim().match(/^(\d{2})(\d{2})(\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
-    if (!mm) return null;
-    d = +mm[1]; m = +mm[2]; y = +mm[3]; hh = +(mm[4] || 0); mi = +(mm[5] || 0); ss = +(mm[6] || 0);
+    // ISO first (SharePoint/Graph: 2026-08-30T00:00:00Z), then the VMS "DDMMYYYY hh:mm" text form
+    const iso = v.trim().match(/^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2}))?)?/);
+    if (iso) {
+      y = +iso[1]; m = +iso[2]; d = +iso[3]; hh = +(iso[4] || 0); mi = +(iso[5] || 0); ss = +(iso[6] || 0);
+    } else {
+      const mm = v.trim().match(/^(\d{2})(\d{2})(\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
+      if (!mm) return null;
+      d = +mm[1]; m = +mm[2]; y = +mm[3]; hh = +(mm[4] || 0); mi = +(mm[5] || 0); ss = +(mm[6] || 0);
+    }
     if (m < 1 || m > 12 || d < 1 || d > 31) return null;
   } else return null;
   if (y < 2024 || y > 2027) return null;
@@ -220,16 +329,39 @@ async function refreshVms(getToken, vmsUrlFallback, context) {
   let rows = [];
   const missing = [];
   const moved = [];     // sources found somewhere other than their configured path
+  const fellBack = [];  // list-backed sources that had to use their workbook fallback
   const stale = {};     // project -> last date we actually have, for sources that failed
   const perSource = {}; // diagnostics per source file (visible in ?refresh=1&dryrun=1)
-  for (const [proj, driveId, path, sheets, dedupe, forceProject] of sources()) {
+  for (const raw of sources()) {
+    const src = normalizeSource(raw);
+    const proj = src.project;
     try {
-      const got = await fetchSource(driveId, path, token, log);
-      const info = {};
-      const cleaned = cleanSource(proj, got.buf, sheets, dedupe, log, info, forceProject);
+      const info = {}; let cleaned, where;
+      if (src.kind === 'splist') {
+        try {
+          const got = await graphListRows(src, token, log);
+          cleaned = cleanListRows(proj, got.items, src, log, info);
+          where = 'sharepoint list "' + got.listName + '" @ ' + src.site;
+          info.sampleKeys = got.sampleKeys;
+        } catch (e) {
+          if (!src.fallback) throw e;
+          // never let a list problem silently zero a project: fall back to the workbook and say so
+          log('  !! SHAREPOINT LIST FAILED for ' + proj + ': ' + e.message + ' — falling back to the OneDrive workbook');
+          const fb = src.fallback;
+          const got = await fetchSource(fb.driveId, fb.paths, token, log);
+          cleaned = cleanSource(proj, got.buf, fb.sheets, fb.dedupe, log, info, fb.forceProject);
+          where = 'workbook ' + got.path + ' (FALLBACK — list unavailable)';
+          info.listError = e.message.slice(0, 200);
+          fellBack.push(proj);
+        }
+      } else {
+        const got = await fetchSource(src.driveId, src.path, token, log);
+        cleaned = cleanSource(proj, got.buf, src.sheets, src.dedupe, log, info, src.forceProject);
+        where = got.path;
+        if (got.movedFrom) { info.movedFrom = got.movedFrom; moved.push(proj); }
+      }
       let maxD = ''; cleaned.forEach(r => { if (r[7] > maxD) maxD = r[7]; });
-      perSource[proj] = { rows: cleaned.length, newestDate: maxD, bytes: info.bytes, sheets: info.sheets, matchedSheets: info.matchedSheets, path: got.path };
-      if (got.movedFrom) { perSource[proj].movedFrom = got.movedFrom; moved.push(proj); }
+      perSource[proj] = Object.assign({ rows: cleaned.length, newestDate: maxD, source: where }, info);
       rows = rows.concat(cleaned);
     } catch (e) {
       log('  !! MISSING ' + proj + ': ' + e.message);
@@ -270,6 +402,8 @@ async function refreshVms(getToken, vmsUrlFallback, context) {
       + ' — these figures are NOT current.');
   }
   if (moved.length) log('  note: sources relocated since last config update: ' + moved.join(', '));
+  if (fellBack.length) log('  !! FELL BACK TO WORKBOOK (SharePoint list unreachable): ' + fellBack.join(', ')
+    + ' — check the app registration has Graph Sites.Read.All.');
   if (!rows.length) throw new Error('VMS refresh produced 0 rows — keeping previous file');
 
   // build visitor.xlsx (sheet FINAL, same header). Dates are raw Excel serials with a
@@ -300,7 +434,7 @@ async function refreshVms(getToken, vmsUrlFallback, context) {
   const counts = {};
   records.forEach(r => { counts[r.project] = (counts[r.project] || 0) + 1; });
   log('VMS refresh: ' + rows.length + ' rows total', JSON.stringify(counts));
-  return { records, xlsxBuffer, counts, missing, stale, moved, total: rows.length, perSource };
+  return { records, xlsxBuffer, counts, missing, stale, moved, fellBack, total: rows.length, perSource };
 }
 
 /* ---- commit visitor.xlsx to the dashboard repo (GitHub contents API) ---- */
@@ -324,4 +458,4 @@ async function commitVisitorXlsx(xlsxBuffer, context) {
   return true;
 }
 
-module.exports = { refreshVms, commitVisitorXlsx, cleanSource, parseDateCell, prevRowsAll };
+module.exports = { refreshVms, commitVisitorXlsx, cleanSource, cleanListRows, graphListRows, nkey, parseDateCell, prevRowsAll };
