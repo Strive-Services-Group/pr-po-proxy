@@ -261,10 +261,13 @@ function buildEmail(vmsRecords, scRows, warnNote) {
   // 3 most recent dates present in the visitor data, oldest -> newest
   const dset = {};
   vmsRecords.forEach(r => { if (r && r.date) dset[r.date] = 1; });
-  let dates = Object.keys(dset).sort().reverse().slice(0, 3);
+  // last 3 COMPLETE days (Dubai): the Live App feeds same-day check-ins, so the data can
+  // contain today — but a day still in progress reads as a mysteriously low count. Cap at yesterday.
+  const todayDxb = new Date(Date.now() + 4 * 3600 * 1000).toISOString().slice(0, 10);
+  let dates = Object.keys(dset).filter(d => d < todayDxb).sort().reverse().slice(0, 3);
   if (!dates.length) {
     const t = new Date(Date.now() + 4 * 3600 * 1000);
-    for (let i = 0; i < 3; i++) { const d = new Date(t); d.setUTCDate(d.getUTCDate() - i); dates.push(d.toISOString().slice(0, 10)); }
+    for (let i = 1; i <= 3; i++) { const d = new Date(t); d.setUTCDate(d.getUTCDate() - i); dates.push(d.toISOString().slice(0, 10)); }
   }
   dates = dates.slice().reverse();
   const dateSet = {}; dates.forEach(d => dateSet[d] = 1);
