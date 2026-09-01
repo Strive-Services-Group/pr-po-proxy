@@ -361,7 +361,9 @@ function buildEmail(vmsRecords, scRows, warnNote) {
       const grpTop = di === 0 ? 'border-top:2px solid #d6dee8;' : '';
       body += '<tr>';
       if (di === 0) {
-        body += '<td rowspan="' + dates.length + '" style="' + tdD + grpTop + 'font-weight:800;color:' + NAVYD + ';font-size:13.5px;text-align:left;padding-left:10px;">&#127970; ' + escHtml(TELE_PROJ_LBL[p] || p) + '</td>';
+        var pcell = '&#127970; ' + escHtml(TELE_PROJ_LBL[p] || p);
+        if (p === 'BALQIS RESIDENCE') pcell += '<div style="margin-top:5px;"><span style="display:inline-block;padding:2px 8px;border-radius:9px;background:#DEF7EC;color:#03543F;font-size:9px;font-weight:800;letter-spacing:.4px;white-space:nowrap;">&#9889; VMS Live App</span></div>'; // Balqis comes live from the Sahalah Visitor Log app (SharePoint list)
+        body += '<td rowspan="' + dates.length + '" style="' + tdD + grpTop + 'font-weight:800;color:' + NAVYD + ';font-size:13.5px;text-align:left;padding-left:10px;">' + pcell + '</td>';
         body += '<td rowspan="' + dates.length + '" style="' + tdD + grpTop + 'font-weight:800;color:#1D4ED8;font-size:15px;">' + apts.toLocaleString() + '</td>';
       }
       body += '<td style="' + tdD + grpTop + 'font-weight:700;color:#2563EB;">' + escHtml(teleFmtDate(dt)) + ' &rsaquo;</td>';

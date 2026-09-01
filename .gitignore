@@ -1,3 +1,4 @@
 node_modules/
 .DS_Store
 local.settings.json
+_to_delete/
