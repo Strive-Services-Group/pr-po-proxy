@@ -400,7 +400,7 @@ function buildEmail(vmsRecords, scRows, warnNote) {
     '<div style="border:1px solid #dbe3ec;border-radius:12px;overflow:hidden;display:inline-block;">' +
     '<table cellpadding="0" cellspacing="0" border="0" width="' + TOTAL_W + '" style="border-collapse:collapse;table-layout:fixed;width:' + TOTAL_W + 'px;background:#ffffff;">' + head + body + '</table>' +
     '</div>' +
-    '<div style="font-family:' + FONT + ';font-size:10px;color:#8b98a5;margin-top:8px;">Automated daily 9:20 AM report &#183; Strive Services Group &#183; data: Candoo bookings &amp; work orders (Dynamics 365) + building visitor logs</div>' +
+    '<div style="font-family:' + FONT + ';font-size:10px;color:#8b98a5;margin-top:8px;">Automated daily 9:00 AM report &#183; Strive Services Group &#183; data: Candoo bookings &amp; work orders (Dynamics 365) + building visitor logs</div>' +
     '</div>';
 
   return { subject, html, dates };
@@ -454,7 +454,7 @@ async function runRefreshAndCommit(context) {
   return { total: rf.total, counts: rf.counts, missing: rf.missing, committed };
 }
 
-// 9:20 job: build + send. Prefers the file the 8:50 job committed; if that is stale
+// 9:00 job: build + send. Prefers the file the 8:50 job committed; if that is stale
 // or unreachable, refreshes inline (and commits) exactly like the old single job.
 // S&C is ALWAYS a live Dataverse query at send time — never cached — so bookings
 // entered late for earlier days are picked up in full.
@@ -501,11 +501,11 @@ app.timer('telemetry-refresh-850', {
   schedule: '0 50 4 * * *',
   handler: async (timer, context) => {
     try { await runRefreshAndCommit(context); }
-    catch (e) { context.error('8:50 VMS refresh FAILED (9:20 email will refresh inline):', e.message); }
+    catch (e) { context.error('8:50 VMS refresh FAILED (9:00 email will refresh inline):', e.message); }
   }
 });
 
-// 05:00 UTC = 9:20 AM Dubai, every day: build + SEND (uses the 8:50 file; falls back to inline refresh).
+// 05:00 UTC = 9:00 AM Dubai, every day: build + SEND (uses the 8:50 file; falls back to inline refresh).
 app.timer('telemetry-email-daily', {
   schedule: '0 0 5 * * *',
   handler: async (timer, context) => {
