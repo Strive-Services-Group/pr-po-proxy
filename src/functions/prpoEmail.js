@@ -548,7 +548,7 @@ function tcard(label,cols,accent,foot){
 
 /* ---- triggers ---- */
 // NCRONTAB runs in UTC: 06:00 UTC = 10:00 AM Dubai. 1-5 = Monday-Friday (no weekend sends). Do NOT put the Dubai hour here.
-app.timer('prpo-email-daily', { schedule:'0 0 7 * * 1-5', handler:async(timer,context)=>{
+app.timer('prpo-email-daily', { schedule:'0 0 6 * * 1-5', handler:async(timer,context)=>{
   // Guard: Azure re-fires a "missed" timer after deploys/restarts. Only send 10:00–10:30 Dubai, Mon–Fri.
   const dxb=new Date(Date.now()+4*3600*1000); const hh=dxb.getUTCHours(), mm=dxb.getUTCMinutes(), dow=dxb.getUTCDay();
   if(dow===0||dow===6){ context.log('prpo-email-daily: weekend ('+['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][dow]+') — skipped'); return; }
