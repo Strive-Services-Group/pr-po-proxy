@@ -110,16 +110,15 @@ const STAGE_ORDER=[['PR','Re-Assigned/Rejected'],['PR','Procurement'],['PR','Ope
 function buildItems(prRows, poRows){
   const items=[];
   for(const r of prRows){ if(!prLive(r)) continue; const hb=prHb(PR_MAP[r['Step name']]); const rowdept=String(r['Department']||'').trim(); const pw0=prPendingWith(r); const inrev=(String(r['Status']||'').trim()==='In review');
-    // When Status is In review, the pending user is taken straight from the Pending Approver/User column (pw0) —
-    // the department ops-confirmer substitution applies only to non-In-review ops-confirm steps. So an In-review
-    // "Operations to Confirm" item is owned by (and nudges) whoever F&O has it pending with, and routes by that
-    // person's role (procurement -> Procurement bucket, not "Re-Assigned/Rejected").
-    const owner=(((hb==='Operations to Confirm' && !inrev)?(opsUserForDept(rowdept)||pw0):pw0)||'(unassigned)');
-    // "All game is with the pending approver": route by roleOf(owner). A Procurement STEP still In review but held
-    // by an operations person is a genuine bounce-back -> "Re-Assigned/Rejected" in the Operations email.
+    const owner=((hb==='Operations to Confirm'?(opsUserForDept(rowdept)||pw0):pw0)||'(unassigned)');
+    // "All game is with the pending approver": route by roleOf(owner). Where the step's home disagrees with the
+    // approver (a bounced-back item) AND the PR is still In review, it lands in the "Re-Assigned/Rejected" bucket of
+    // the approver's email (Draft/Approved bounce-candidates are NOT flagged — they take the normal bucket):
+    //   - Procurement step, In review, held by an operations person  -> Re-Assigned/Rejected, Operations email
+    //   - Operations-to-confirm step, In review, held by procurement  -> Re-Assigned/Rejected, Procurement email
     const rl=roleOf(owner); let stage,div;
     if(rl==='Finance'||rl==='Director'||rl==='CEO'){ stage=rl; div='finance'; }
-    else if(rl==='Procurement'){ div='procurement'; stage='Procurement'; }
+    else if(rl==='Procurement'){ div='procurement'; stage=(hb==='Operations to Confirm'&&inrev)?'Re-Assigned/Rejected':'Procurement'; }
     else { div=opsDivFor(rowdept); stage=(hb==='Procurement'&&inrev)?'Re-Assigned/Rejected':(hb==='Operations to Confirm')?'Operations to Confirm':'Dep Managers'; }
     items.push({ref:r['Purchase requisition'],doc:'PR',typ:String(r['Purchase requisition']||'').startsWith('CPR')?'CPR':'PR',stage:stage,div:div,age:prAge(r),owner:owner,dept:rowdept,value:amt(r),vendor:'',ppend:true,raw:r}); }
   // PO: owner + "genuinely pending a person?" flag (In review -> Pending Approver/User, Draft -> Created by; Confirmed/Approved not pending).
