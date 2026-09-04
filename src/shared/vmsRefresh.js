@@ -19,8 +19,10 @@
  *       /VMS-DATA FILES/VMS-NORTH RESIDENCE.xlsx, VMS-SOUTH RESIDENCE.xlsx
  *
  * Cleaning rules (identical to clean_vms.py):
- *   - keep purposes: LAUNDRY, INSPECTION, CLEANING/CLEANERS, MAINTENANCE/HANDYMAN,
- *     FIT-OUT, AMCCONTRACTORS (compared uppercase, spaces stripped)
+ *   - keep purposes (the four telemetry service lines only, from 4 Sep 2026):
+ *     LAUNDRY, CLEANING/CLEANERS + CLEANING/CLEANER, MAINTENANCE/HANDYMAN, FIT-OUT
+ *     (compared uppercase, spaces stripped). INSPECTION and AMCCONTRACTORS were
+ *     dropped on 4 Sep — they no longer count toward All Visitors or Share %.
  *   - "Unit Visit" check-ins only; Dima excluded everywhere
  *   - date from cell (Excel date or "DDMMYYYY hh:mm[:ss]" text), year 2024–2027
  *   - per-file de-dupe (date|purpose|unit|company) for the Abdul Muqeet files
@@ -69,15 +71,16 @@ function sources() {
   return DEFAULT_SOURCES;
 }
 
+/* Telemetry is STRICTLY the four service lines — Laundry, Cleaning (Housekeeping),
+   Maintenance/Handyman, Fit-Out (CK, 4 Sep 2026). Everything else is excluded:
+   INSPECTION and AMC CONTRACTORS (legacy workbook purposes, dropped 4 Sep — this
+   lowers historical All Visitors/Share % for every project, which is intended), and
+   the app's other purposes (AMC service provider, Emergency call out, Swimming pool
+   cleaning, Landscaping, Pest control, Move In/Out, Delivery, Guest).
+   Both spellings of cleaning are kept: workbooks wrote "Cleaning/Cleaners" (plural),
+   the Visitor App writes "Cleaning/Cleaner" (singular). norm() = uppercase, spaces stripped. */
 const KEEP = new Set([
-  // legacy workbook spellings
-  'LAUNDRY', 'INSPECTION', 'CLEANING/CLEANERS', 'MAINTENANCE/HANDYMAN', 'FIT-OUT', 'AMCCONTRACTORS',
-  // Sahalah Visitor App (Balqis live list, from 1 Sep 2026) writes "Cleaning/Cleaner" — singular.
-  // Per CK 4 Sep 2026: telemetry counts ONLY Laundry, Cleaning (Housekeeping),
-  // Maintenance/Handyman and Fit-Out; the app's other purposes (AMC service provider,
-  // Emergency call out, Swimming pool cleaning, Landscaping, Pest control, Move In/Out,
-  // Delivery, Guest) are deliberately NOT counted.
-  'CLEANING/CLEANER'
+  'LAUNDRY', 'CLEANING/CLEANERS', 'CLEANING/CLEANER', 'MAINTENANCE/HANDYMAN', 'FIT-OUT'
 ]);
 const HEADER = ['Check In Date', 'Check In Type', 'Check In Purpose', 'Company Name', 'Scope of work', 'Building/ Unit', 'Project Name'];
 const norm = s => String(s == null ? '' : s).toUpperCase().replace(/ /g, '');
