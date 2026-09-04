@@ -69,7 +69,16 @@ function sources() {
   return DEFAULT_SOURCES;
 }
 
-const KEEP = new Set(['LAUNDRY', 'INSPECTION', 'CLEANING/CLEANERS', 'MAINTENANCE/HANDYMAN', 'FIT-OUT', 'AMCCONTRACTORS']);
+const KEEP = new Set([
+  // legacy workbook spellings
+  'LAUNDRY', 'INSPECTION', 'CLEANING/CLEANERS', 'MAINTENANCE/HANDYMAN', 'FIT-OUT', 'AMCCONTRACTORS',
+  // Sahalah Visitor App (Balqis live list, from 1 Sep 2026) writes "Cleaning/Cleaner" — singular.
+  // Per CK 4 Sep 2026: telemetry counts ONLY Laundry, Cleaning (Housekeeping),
+  // Maintenance/Handyman and Fit-Out; the app's other purposes (AMC service provider,
+  // Emergency call out, Swimming pool cleaning, Landscaping, Pest control, Move In/Out,
+  // Delivery, Guest) are deliberately NOT counted.
+  'CLEANING/CLEANER'
+]);
 const HEADER = ['Check In Date', 'Check In Type', 'Check In Purpose', 'Company Name', 'Scope of work', 'Building/ Unit', 'Project Name'];
 const norm = s => String(s == null ? '' : s).toUpperCase().replace(/ /g, '');
 
