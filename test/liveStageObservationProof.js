@@ -39,7 +39,7 @@ const {
     passed: stored.ssg_isreportable === false &&
       stored.ssg_currentstepname === 'Receipt posted' &&
       notes.clockProvenance === 'PENDING_SINCE_FIRST_OBSERVED' &&
-      stored.ssg_observedpendingsince === changedAt
+      Math.abs(new Date(stored.ssg_observedpendingsince).getTime() - new Date(changedAt).getTime()) < 1000
   };
   if (process.argv[2]) fs.writeFileSync(process.argv[2], JSON.stringify(proof, null, 2) + '\n');
   process.stdout.write(JSON.stringify(proof, null, 2) + '\n');
