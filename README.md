@@ -8,30 +8,35 @@ Small Azure Function that reads purchase requisition (PR) and purchase order (PO
 
 The authorised company target for PR/PO work is **`ssg-prpo-proxy`**. `.github/workflows/deploy-ssg-prpo-proxy.yml` is manual-only and requires the exact tested commit SHA. Waqas must set `AZURE_FUNCTIONAPP_PUBLISH_PROFILE_SSG_PRPO_PROXY`, containing the publish profile for that app. The legacy workflow is disabled and has no push trigger or deployment step.
 
-## Workbook retirement status
+## Live dataset contract
 
-Correction 01 merges `PR in review` into `Sourcing`, uses live line amounts excluding VAT and follows live PO events. The corrected reconciliation still concludes **cannot retire** because PR stage, PO stage and PR amount gates remain below 95%. The existing workbook-based dashboard, email and snapshot paths remain protected. No live-dataset cutover or deployment was made.
+Correction 04 replaces the final workbook path. F&O is authoritative for PR/PO state and line amounts; the development `ssg_` capture is authoritative for approval assignments and PO stage observations. The final workbook is used once only to seed otherwise unavailable PO clocks, explicitly labelled `SEEDED_FROM_FINAL_WORKBOOK`.
 
 ## Endpoints
-- `GET /api/pr` — assembled purchase requisitions
-- `GET /api/po` — assembled purchase orders
+- `GET /api/dataset` — shared revision used by dashboard and email
+- `GET /api/pr` — PR slice of that revision
+- `GET /api/po` — PO slice of that revision
 
 Legacy out-of-scope URL (reference only; do not deploy): `https://pr-po-dashboard-proxy-b4budzexh7eveved.uaenorth-01.azurewebsites.net`
 
 ## What it does
 - Authenticates to D365 F&O (client-credentials) using app settings.
-- Reads `PurchaseRequisitionHeaders` + lines + `WorkflowWorkItems` (PR), and `PurchaseOrderHeadersV2` + lines + `VendorsV2` (PO).
-- Returns one JSON row per PR/PO with the fields the dashboard needs; caches for 3 minutes.
+- Reads all companies from F&O with `cross-company=true`.
+- Derives PR stages from approval capture and active-line pricing.
+- Derives PO stages from F&O status, confirmations, receipts and invoices.
+- Preserves the first observation of PO stage changes in development Dataverse.
+- Returns one revision shared by the dashboard and email; caches for 3 minutes.
 
 ## Key files
-- `src/functions/pr.js` — the function (token + OData queries + assembly + CORS).
+- `src/shared/prpoDataset.js` — the source-of-truth assembly and clock model.
+- `src/functions/pr.js` — live dataset endpoints and CORS.
 - `package.json`, `host.json` — Functions config.
 - `stepMap.json` / `poStepMap.json` — workflow element GUID → step-name maps (legacy; the dashboard now overlays steps from its own export, so these are secondary).
 - `README-DEPLOY.md` — deployment + troubleshooting notes.
 
 ## App settings (in the Azure Function App, not in code)
-`TENANT_ID`, `CLIENT_ID`, `CLIENT_SECRET`, `FO_RESOURCE`, `ALLOWED_ORIGIN` (and `DASHBOARD_CLIENT_ID` if token-auth is enabled).
+`TENANT_ID`, `CLIENT_ID`, `CLIENT_SECRET`, `FO_RESOURCE`, `ALLOWED_ORIGIN`, `DATAVERSE_API_URL`, `DATAVERSE_RESOURCE`, `DATAVERSE_MI_CLIENT_ID`, `PRPO_STAGE_OBSERVATION_WRITE` (and `DASHBOARD_CLIENT_ID` if token-auth is enabled).
 
 ## Source-of-truth note
 
-F&O virtual entities are the source for current headers and lines. The development `ssg_` capture is the source for current approval work items and assignment observations. The workbook remains the production source for detail that the corrected live model cannot yet reproduce within the gates. See the companion repository's `evidence/workbook-retirement-correction-01.md` before changing that boundary.
+F&O virtual entities are the source for current headers, lines and PO lifecycle state. The development `ssg_` capture is the source for current approval work items and first-observed PO stage clocks. No workbook is a runtime source.

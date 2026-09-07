@@ -3,7 +3,7 @@
  * dashboard's Analysis tab can show true week-over-week deltas.
  *
  * TIMER: 0 15 18 * * 0  (Sunday 18:15 UTC = 22:15 Dubai; after buckets-weekly at 18:00)
- *   1. Fetches pr.xlsx / po.xlsx from the dashboard GitHub Pages (same source as the emails).
+ *   1. Reads the shared live dataset revision used by the dashboard and daily emails.
  *   2. buildItems() from prpoEmail.js -> per-bucket + per-division counts + exception counts.
  *   3. Appends {date, buckets, divisions, exceptions, totals} to weekly_snapshots.json in the
  *      PR-PO-Pipeline-Dashboard repo (GitHub contents API).
@@ -16,13 +16,10 @@
  *      Optional: PRPO_SNAP_REPO, PRPO_SNAP_BRANCH.
  */
 const { app } = require('@azure/functions');
-const { buildItems, parseXlsx } = require('./prpoEmail.js');
+const { buildItems } = require('./prpoEmail.js');
+const { getDataset } = require('../shared/prpoDataset');
 
-const PR_URL = process.env.PRPO_PR_URL || 'https://strive-services-group.github.io/PR-PO-Pipeline-Dashboard/pr.xlsx';
-const PO_URL = process.env.PRPO_PO_URL || 'https://strive-services-group.github.io/PR-PO-Pipeline-Dashboard/po.xlsx';
 const SNAP_URL = 'https://strive-services-group.github.io/PR-PO-Pipeline-Dashboard/weekly_snapshots.json';
-
-async function fetchBuf(url){ const r = await fetch(url + (url.includes('?')?'&':'?') + 't=' + Date.now()); if(!r.ok) throw new Error('fetch ' + r.status + ' ' + url); return Buffer.from(await r.arrayBuffer()); }
 
 function computeSnapshot(items){
   const buckets = {}, divisions = {};
@@ -67,9 +64,11 @@ async function commitSnapshots(obj){
 }
 
 async function runSnapshot(doCommit, context){
-  const [prBuf, poBuf] = await Promise.all([fetchBuf(PR_URL), fetchBuf(PO_URL)]);
-  const items = buildItems(parseXlsx(prBuf), parseXlsx(poBuf));
+  const dataset = await getDataset();
+  const items = buildItems(dataset.pr.rows, dataset.po.rows);
   const snap = computeSnapshot(items);
+  snap.datasetRevision = dataset.revision;
+  snap.datasetGeneratedAt = dataset.generatedAt;
   const existing = await loadExisting();
   existing.snapshots = existing.snapshots.filter(s => s.date !== snap.date); // one per day max
   existing.snapshots.push(snap);

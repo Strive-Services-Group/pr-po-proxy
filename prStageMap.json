@@ -1,0 +1,22 @@
+{
+  "approval": {
+    "6d596254-3beb-4d5f-8eac-91a105d9170e": "Dep Managers",
+    "73e02180-fa2e-469e-82f7-aa18cf5a8a34": "Dep Managers",
+    "b6bb0cb0-5024-4378-89d9-70a03b3fdbf1": "Finance"
+  },
+  "procurementElements": [
+    "f51900e9-7be4-4b68-9974-a08f70dedaa6",
+    "279bb073-e726-4ede-ac00-28809f541276",
+    "091f50e5-6f7d-4a9a-a888-ed3f9a866ad5",
+    "7fec7407-c2e4-48a7-a598-2ee8ae5e738c",
+    "4877c0fc-15a3-4c34-93f9-5164b2072751",
+    "3aacced0-8e9a-4cf8-be22-54587260f201",
+    "01be9b2f-bcd5-42fc-8adb-c9fe9b9473f8",
+    "51cb930f-58df-4889-8a8a-bcb5802c2331",
+    "972eff02-787c-425a-b62c-c45396cff48c",
+    "bd5d6aab-856d-4f70-bdf6-f53c64560736",
+    "b133adea-3e84-4afe-9c71-ef1e30b6f2ef"
+  ],
+  "manualOverrides": {},
+  "source": "Accepted correction-02 unambiguous workbook/capture reconciliation, 2026-09-07"
+}

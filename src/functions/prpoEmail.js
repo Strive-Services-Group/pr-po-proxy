@@ -41,23 +41,22 @@
 const { app } = require('@azure/functions');
 const XLSX = require('xlsx');
 const ExcelJS = require('exceljs');
+const { getDataset } = require('../shared/prpoDataset');
 
-const PR_URL = process.env.PRPO_PR_URL || 'https://strive-services-group.github.io/PR-PO-Pipeline-Dashboard/pr.xlsx';
-const PO_URL = process.env.PRPO_PO_URL || 'https://strive-services-group.github.io/PR-PO-Pipeline-Dashboard/po.xlsx';
 const DASH   = process.env.PRPO_DASH_URL || 'https://strive-services-group.github.io/PR-PO-Pipeline-Dashboard/';
 const FONT = 'Aptos,Segoe UI,Arial,sans-serif', NAVY = '#14315E', RED = '#dc2626', TEAL = '#0f766e', W = 1000;
 
-const PR_MAP = {"Handyman Services_Manager":"Dep Managers","Building Services_Asst. Facility Managers 1":"Dep Managers","PurchReqReviewTask":"PR In Review","Procurement sends inquiry/RFQ to suppliers":"RFQ to suppliers","Quotation received and logged/attached":"Qt received & Logged","Quotation shared to Operations for confirmation":"Qt Shared to Op","Operations confirms material/scope":"OP confirms material","Unit prices updated in PR lines":"Unit Price Updated","Building Services_Asst. Facility Managers 2":"Dep Managers","Building Services_Facilities Manager":"Dep Managers","PAC Services_Manager":"Dep Managers","Concierge Services_Manager":"Dep Managers","Security Services_Manager":"Dep Managers","Home Services_Operations Manager":"Dep Managers","Landscaping_Manager":"Dep Managers","Finance & Accounts_Accounting Manager":"Finance","Facilities Management_Director":"Director","Commercial_Director":"Director","Executive Management_CEO":"CEO"};
+const PR_MAP = {"Sourcing":"Sourcing","Priced — awaiting approval":"Priced — awaiting approval","Dep Managers":"Dep Managers","Finance":"Finance","Director":"Director","CEO":"CEO"};
 const PROC = new Set(["PR In Review","RFQ to suppliers","Qt received & Logged","OP confirms material","Procurement (in process)"]);
 const OPS = new Set(["Qt Shared to Op","Unit Price Updated"]);
 const PO_MAP = {"Advance payment request submitted (if applicable)":"Procurement","Procurement Manager":"Procurement","Accounting Manager":"Finance","Finance and Accounts Director":"Director","CEO":"CEO","LPO sent/shared with supplier":"Sent to Supplier"};
-const COLOR = {'Procurement':'#3b82f6','Operations to Confirm':'#14b8a6','Dep Managers':'#8b5cf6','Finance':'#22c55e','Director':'#ec4899','CEO':'#f59e0b','Sent to Supplier':'#a855f7','Pending Invoicing':'#f97316','Re-Assigned/Rejected':'#dc2626','Pending Internal':'#14b8a6','Pending Client':'#6366f1','Confirmed Open Order':'#0891b2'};
-const GRAD = {'Procurement':'#eff5ff','Operations to Confirm':'#ebfbf7','Dep Managers':'#f4f1fe','Finance':'#eefbf3','Director':'#fdeff7','CEO':'#fff9ec','Sent to Supplier':'#f9f2ff','Pending Invoicing':'#fff4e8','Re-Assigned/Rejected':'#fef2f2','Pending Internal':'#ebfbf7','Pending Client':'#eef2ff','Confirmed Open Order':'#ecfeff'};
+const COLOR = {'Procurement':'#3b82f6','Sourcing':'#0ea5e9','Priced — awaiting approval':'#84cc16','Operations to Confirm':'#14b8a6','Dep Managers':'#8b5cf6','Finance':'#22c55e','Director':'#ec4899','CEO':'#f59e0b','Sent to Supplier':'#a855f7','Pending Invoicing':'#f97316','Re-Assigned/Rejected':'#dc2626','Pending Internal':'#14b8a6','Pending Client':'#6366f1','Confirmed Open Order':'#0891b2'};
+const GRAD = {'Procurement':'#eff5ff','Sourcing':'#effbff','Priced — awaiting approval':'#f5fae8','Operations to Confirm':'#ebfbf7','Dep Managers':'#f4f1fe','Finance':'#eefbf3','Director':'#fdeff7','CEO':'#fff9ec','Sent to Supplier':'#f9f2ff','Pending Invoicing':'#fff4e8','Re-Assigned/Rejected':'#fef2f2','Pending Internal':'#ebfbf7','Pending Client':'#eef2ff','Confirmed Open Order':'#ecfeff'};
 const TYCOL = {'PR':'#2563eb','CPR':'#7c3aed','PO':'#0891b2'};
 
 /* ---- helpers ---- */
 function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
-function money(v){ const n=Number(v); return (isFinite(n)?n:0).toLocaleString('en-US',{maximumFractionDigits:0}); }
+function money(v){ const n=Number(v); return (isFinite(n)?n:0).toLocaleString('en-US',{maximumFractionDigits:0})+' excl. VAT'; }
 function amt(r){ const v=Number(r['Total amount']); return isFinite(v)?v:0; }
 function xd(v){ if(v instanceof Date) return isNaN(v)?null:v; if(typeof v==='number'&&isFinite(v)){ const o=XLSX.SSF.parse_date_code(v); if(!o||!o.y) return null; return new Date(Date.UTC(o.y,o.m-1,o.d,o.H||0,o.M||0,Math.floor(o.S||0))); } if(typeof v==='string'&&v){ const d=new Date(v); return isNaN(d)?null:d; } return null; }
 function ageDays(v){ const d=xd(v); return d? Math.max(0,Math.floor((Date.now()-d.getTime())/86400000)) : null; }
@@ -65,10 +64,11 @@ function ymdStr(v){ const d=xd(v); if(!d) return ''; const p=n=>String(n).padSta
 function avg(l){ return l.length? l.reduce((a,b)=>a+b,0)/l.length : 0; }
 function parseXlsx(buf){ const wb=XLSX.read(buf,{type:'buffer'}); const ws=wb.Sheets[wb.SheetNames[0]]; const aoa=XLSX.utils.sheet_to_json(ws,{header:1,defval:null,raw:true}); if(!aoa.length) return []; const hdr=aoa[0].map(x=>String(x)); const rows=[]; for(let i=1;i<aoa.length;i++){ const o={}; for(let j=0;j<hdr.length;j++) o[hdr[j]]=aoa[i][j]; rows.push(o);} return rows; }
 function prLive(r){ const st=String(r['Status']||''); return !!PR_MAP[r['Step name']] && st.toLowerCase()!=='closed' && st!=='Rejected' && st!=='Cancelled'; }
-function poBucket(r){ const step=r['Step name'],appr=String(r['Approval status']||''),pos=String(r['Purchase order status']||''); let b=PO_MAP[step]||null; if(appr==='Confirmed'&&pos==='Received') b='Pending Invoicing'; if(appr==='Rejected'||pos==='Canceled'||pos==='Invoiced'||!b) return null; return b; }
+function poBucket(r){ const live=String(r['Live stage']||r['Step name']||''); const appr=String(r['Approval status']||''); const pos=String(r['Purchase order status']||''); let b=PO_MAP[r['Step name']]||null; if(['Procurement','Finance','Director','CEO'].includes(live)) b=live; if(live==='Approval — unmapped element'||live==='Not yet sent') b='Procurement'; if(live==='Sent to supplier') b='Sent to Supplier'; if(live==='Receipt posted') b='Pending Invoicing'; if(live==='Invoiced') return null; if(appr==='Rejected'||pos==='Canceled'||pos==='Cancelled'||pos==='Closed'||pos==='Invoiced'||!b) return null; return b; }
 function prHb(b){ return PROC.has(b)?'Procurement':(OPS.has(b)?'Operations to Confirm':b); }
 function prAge(r){ const sd=r['Step date and time']; return ageDays(sd!=null? sd : r['Created date']); }
 function poAge(r){ const sd=r['Step date and time']; return ageDays(sd!=null? sd : (r['Created date and time']!=null? r['Created date and time'] : r['Requested receipt date'])); }
+function clockNote(r){ const p=String(r&&r['Clock provenance']||''); if(p==='SEEDED_FROM_FINAL_WORKBOOK') return ' — since (from last export)'; if(p==='NOT_RECORDED') return ' — since — not recorded'; return ''; }
 
 /* ---- USER-based routing: pending-with (by status) -> user's department -> division ---- */
 const USER_DEPT={"Abdul Basit Raza":"Building Services","Abdul.basit":"IT","Abdul.Muqeet":"Security Services","Admin":"IT","admin.hk":"Housekeeping Services","Adnan.Ullah":"Procurement","Ahamed Noorullah Mohamed":"Accomodation Services","Ahmed.Odeh":"Building Services","Aparna.Pauly":"Procurement","arman.b":"Accounts & Tax","ayman.g":"Accounts & Tax","Ayman.ismail":"Accounts & Tax","Buying Agent Concierge":"Concierge Services","D365CRM ADMIN":"IT","D365CRMADMIN":"IT","Dinesh Laxman Laxman":"Building Services","dinesh.laxman":"Building Services","Gokul Krishna Pillai":"Contracted Cleaning Services","Gokul.Krishna":"Contracted Cleaning Services","IT DEPARTMENT":"IT","Joe Orlain Jamisola":"Concierge Services","Judhin.prabhakar":"Contracted Cleaning Services","Layusha.cleatus":"Procurement","Mohamed.Ashraf":"Procurement","Mohammad.w":"Building Services","Muhammad Shehzad Ahmeduddin":"IT","muhammad.mustajab":"Accounts & Tax","Nathan.Buys":"Building Services","Patrick.Smith":"Accounts & Tax","Pramod Chandrasenan Chandrasenan":"Security Services","pramod.c":"Security Services","Qasim Jahangir":"QHSE","Roderick Red Palma":"Procurement","roderick.red":"Procurement","Shaik.baba":"Housekeeping Services","Shakir Ameer Bakhsh":"FitOut Services","Shijil Choyaprath Chandran":"Home Maintenance Services","shijil.c":"Home Maintenance Services","Sirinikhil":"Housekeeping Services","teena.k":"Concierge Services","Ubaid":"IT","Zaheer Ahmed Ameer":"Accomodation Services","Zaheer.Ahmed":"Accomodation Services"};
@@ -105,7 +105,7 @@ function _unused_itemDivision(it){
   // Operations to Confirm + Dep Managers -> Operations, split by REQUISITION department (unmapped dept -> All-Depts)
   return (it.dept==='Home Maintenance Services'||it.dept==='FitOut Services')?'ops_hm':'ops_all';
 }
-const STAGE_ORDER=[['PR','Re-Assigned/Rejected'],['PR','Procurement'],['PR','Operations to Confirm'],['PR','Dep Managers'],['PR','Finance'],['PR','Director'],['PR','CEO'],['PO','Procurement'],['PO','Finance'],['PO','Director'],['PO','CEO'],['PO','Confirmed Open Order'],['PO','Sent to Supplier'],['PO','Pending Invoicing']];
+const STAGE_ORDER=[['PR','Re-Assigned/Rejected'],['PR','Sourcing'],['PR','Priced — awaiting approval'],['PR','Dep Managers'],['PR','Finance'],['PR','Director'],['PR','CEO'],['PO','Procurement'],['PO','Finance'],['PO','Director'],['PO','CEO'],['PO','Confirmed Open Order'],['PO','Sent to Supplier'],['PO','Pending Invoicing']];
 
 function buildItems(prRows, poRows){
   const items=[];
@@ -117,7 +117,8 @@ function buildItems(prRows, poRows){
     //   - Procurement step, In review, held by an operations person  -> Re-Assigned/Rejected, Operations email
     //   - Operations-to-confirm step, In review, held by procurement  -> Re-Assigned/Rejected, Procurement email
     const rl=roleOf(owner); let stage,div;
-    if(rl==='Finance'||rl==='Director'||rl==='CEO'){ stage=rl; div='finance'; }
+    if(hb==='Sourcing'||hb==='Priced — awaiting approval'){ stage=hb; div='procurement'; }
+    else if(rl==='Finance'||rl==='Director'||rl==='CEO'){ stage=rl; div='finance'; }
     else if(rl==='Procurement'){ div='procurement'; stage=(hb==='Operations to Confirm'&&inrev)?'Re-Assigned/Rejected':'Procurement'; }
     else { div=opsDivFor(rowdept); stage=(hb==='Procurement'&&inrev)?'Re-Assigned/Rejected':(hb==='Operations to Confirm')?'Operations to Confirm':'Dep Managers'; }
     items.push({ref:r['Purchase requisition'],doc:'PR',typ:String(r['Purchase requisition']||'').startsWith('CPR')?'CPR':'PR',stage:stage,div:div,age:prAge(r),owner:owner,dept:rowdept,value:amt(r),vendor:'',ppend:true,raw:r}); }
@@ -237,15 +238,15 @@ async function buildXlsxBase64(fil, cfg){
     {header:'Ref',key:'ref',width:16},{header:'Doc',key:'doc',width:7},{header:'Quote Ref',key:'qref',width:12},{header:'Stage / Bucket',key:'stage',width:22},
     {header:'Step name',key:'step',width:34},{header:'Status',key:'status',width:22},{header:'Department',key:'dept',width:26},
     {header:'Location',key:'loc',width:22},{header:'Pending With',key:'pend',width:20},{header:'Vendor',key:'vendor',width:30},
-    {header:'Value (AED)',key:'value',width:15},{header:'Age (days)',key:'age',width:11},{header:'Created',key:'created',width:13},
-    {header:'Step date',key:'stepd',width:13},{header:'Title / Name',key:'title',width:34},{header:'Preparer / Linked PR',key:'prep',width:20}
+    {header:'Value (AED excl. VAT)',key:'value',width:19},{header:'Age (days)',key:'age',width:11},{header:'Created',key:'created',width:13},
+    {header:'Step date',key:'stepd',width:13},{header:'Clock source',key:'clocksrc',width:24},{header:'Title / Name',key:'title',width:34},{header:'Preparer / Linked PR',key:'prep',width:20}
   ];
   fil.slice().sort((a,b2)=>(b2.age||0)-(a.age||0)).forEach(it=>{ const r=it.raw; let status,loc,ven,created,stepd,title,prep;
     if(it.doc!=='PO'){ status=String(r['Status']||''); loc=r['Location']; ven=''; created=ymdStr(r['Created date']); stepd=ymdStr(r['Step date and time']); title=r['Name']; prep=r['Preparer']; }
     else { status=(String(r['Approval status']||'')+' / '+String(r['Purchase order status']||'')).replace(/^ \/ | \/ $/g,''); loc=r['Location']; ven=r['Vendor name']; created=ymdStr(r['Created date and time']); stepd=ymdStr(r['Step date and time']); title=''; prep=r['Purchase requisition']; }
     const pend=it.owner;  // computed owner: ops-user for ops-confirm, Created-by for Draft POs, approver otherwise
     const qref=(it.doc!=='PO'? String(r['Quotation reference']||'') : '');
-    ws.addRow({ref:it.ref,doc:it.typ,qref,stage:it.stage,step:r['Step name'],status,dept:it.dept,loc,pend,vendor:ven,value:Math.round((it.value||0)*100)/100,age:(it.age==null?null:it.age),created,stepd,title,prep}); });
+    ws.addRow({ref:it.ref,doc:it.typ,qref,stage:it.stage,step:r['Step name'],status,dept:it.dept,loc,pend,vendor:ven,value:Math.round((it.value||0)*100)/100,age:(it.age==null?null:it.age),created,stepd,clocksrc:it.doc==='PO'?(r['Clock label']||'since'):'',title,prep}); });
   const DIVCOL={procurement:'FF1D4ED8',finance:'FF16A34A',ops_hm:'FF0F766E',ops_all:'FF7C3AED'};
   const HEAD=DIVCOL[cfg&&cfg.key]||'FF14315E';
   const h=ws.getRow(1); h.height=26;
@@ -259,7 +260,7 @@ async function buildXlsxBase64(fil, cfg){
     const av=ac.value; if(typeof av==='number'){ ac.font={bold:true,size:10.5,color:{argb: av>30?'FFB42318': av>7?'FF9A6700':'FF1F7A33'}}; }
     row.getCell('doc').alignment={vertical:'middle',horizontal:'center'};
   }
-  ws.autoFilter={ from:{row:1,column:1}, to:{row:1,column:16} };
+  ws.autoFilter={ from:{row:1,column:1}, to:{row:1,column:17} };
   const buf=await wb.xlsx.writeBuffer();
   return Buffer.from(buf).toString('base64');
 }
@@ -274,7 +275,7 @@ function f_details(fil, cfg){
   const body=rows.map(it=>{ const a=Math.round(it.age||0); const acol=a>30?'#B42318':(a>7?'#9A6700':'#1F7A33'); const td='padding:6px 9px;font:400 12px '+HF+';color:#1A2233;border-bottom:1px solid '+HBORD+';'; const tdl=td+'border-left:1px solid #f1f4f8;';
     return '<tr><td style="'+td+'font-weight:600;white-space:nowrap;">'+esc(it.ref)+'</td>'
       +'<td style="'+tdl+'">'+esc(String(desc(it)).slice(0,46))+'</td>'
-      +'<td style="'+tdl+'color:'+HNAVY+';white-space:nowrap;">'+esc(String(it.raw['Step name']||'-').slice(0,28))+'</td>'
+      +'<td style="'+tdl+'color:'+HNAVY+';white-space:nowrap;">'+esc(String(it.raw['Step name']||'-').slice(0,28)+clockNote(it.raw))+'</td>'
       +'<td style="'+tdl+'font-weight:600;white-space:nowrap;">'+esc(String(it.owner||'-').slice(0,18))+'</td>'
       +'<td align="right" style="'+tdl+'font-weight:600;white-space:nowrap;">AED '+money(it.value)+'</td>'
       +'<td align="right" style="'+tdl+'font-weight:700;color:'+acol+';white-space:nowrap;">'+a+'d</td></tr>'; }).join('');
@@ -418,7 +419,7 @@ function buildPersonal(p,hist){
   // Body table: Pending-Client items stay OUT (they are with the client) — cards + attached Excel only.
   const tfil=xfil.filter(it=>it.stage!=='Pending Client');
   const clientN=n-tfil.length;
-  const rows=tfil.slice(0,25).map(it=>['<span style="font-weight:700;color:'+NAVY+';">'+esc(it.ref)+'</span>',sv(it.typ,TYCOL[it.typ]),esc(String(it.doc==='PO'?(it.raw['Vendor name']||'-'):(it.raw['Name']||'-')).slice(0,30)),esc(String(it.raw['Step name']||'-').slice(0,24)),esc(String(it.dept||'-').slice(0,16)),'AED '+money(it.value),agec(it.age)]);
+  const rows=tfil.slice(0,25).map(it=>['<span style="font-weight:700;color:'+NAVY+';">'+esc(it.ref)+'</span>',sv(it.typ,TYCOL[it.typ]),esc(String(it.doc==='PO'?(it.raw['Vendor name']||'-'):(it.raw['Name']||'-')).slice(0,30)),esc(String(it.raw['Step name']||'-').slice(0,24)+clockNote(it.raw)),esc(String(it.dept||'-').slice(0,16)),'AED '+money(it.value),agec(it.age)]);
   const tbl=otable([['Ref',90,'l'],['Type',36,'c'],['Description / Vendor',148,'l'],['Waiting on step',116,'l'],['Department',90,'l'],['Value',84,'r'],['Age',40,'c']],rows);
   const more=(tfil.length>25?'<div style="font-family:'+FONT+';font-size:11.5px;color:#7688a0;margin:7px 0 0;">&#8230;and <b style="color:'+NAVY+';">'+(tfil.length-25)+'</b> more &#8212; the attached Excel has your complete list.</div>':'')
     +(clientN>0?'<div style="font-family:'+FONT+';font-size:11.5px;color:#4b5c74;margin:7px 0 0;">'+sv(String(clientN)+' Pending-Client item'+(clientN===1?'':'s'),COLOR['Pending Client'])+' (unit prices shared with the client for confirmation) are summarised in the cards above and listed in the attached Excel.</div>':'');
@@ -494,32 +495,13 @@ async function sendDivision(out, context){
 }
 
 async function fetchXlsx(url){ const r=await fetch(url+(url.includes('?')?'&':'?')+'t='+Date.now()); if(!r.ok) throw new Error('fetch '+r.status+' '+url); return parseXlsx(Buffer.from(await r.arrayBuffer())); }
-async function loadItems(){ const [prRows,poRows]=await Promise.all([fetchXlsx(PR_URL),fetchXlsx(PO_URL)]); return buildItems(prRows,poRows); }
+async function loadItems(){ const dataset=await getDataset(); const items=buildItems(dataset.pr.rows,dataset.po.rows); items.datasetRevision=dataset.revision; items.datasetGeneratedAt=dataset.generatedAt; items.sourceState=dataset.sourceState; return items; }
 
 /* ---- 3-day trend: the dashboard repo commits pr/po.xlsx daily, so git history IS the snapshot archive.
  * Fetch the latest commit on/before each of the last 2 Dubai days and rebuild items with the same logic. ---- */
 const GH_HIST_REPO='Strive-Services-Group/PR-PO-Pipeline-Dashboard';
 function dubaiYmd(d){ const x=new Date(d.getTime()+4*3600*1000); return x.getUTCFullYear()+'-'+String(x.getUTCMonth()+1).padStart(2,'0')+'-'+String(x.getUTCDate()).padStart(2,'0'); }
-async function historyItems(){
-  const out={};
-  try{
-    const h={'User-Agent':'prpo-email','Accept':'application/vnd.github+json'}; if(process.env.GH_TOKEN) h.Authorization='Bearer '+process.env.GH_TOKEN;
-    const r=await fetch('https://api.github.com/repos/'+GH_HIST_REPO+'/commits?path=pr.xlsx&per_page=20',{headers:h});
-    if(!r.ok) throw new Error('gh commits '+r.status);
-    const commits=await r.json();
-    for(let i=2;i>=1;i--){
-      const ymd=dubaiYmd(new Date(Date.now()-i*86400000));
-      try{
-        const c=commits.find(c2=>dubaiYmd(new Date(c2.commit.committer.date))<=ymd);
-        if(!c) continue;
-        const base='https://raw.githubusercontent.com/'+GH_HIST_REPO+'/'+c.sha+'/';
-        const [pr,po]=await Promise.all([fetchXlsx(base+'pr.xlsx'),fetchXlsx(base+'po.xlsx')]);
-        out[ymd]=buildItems(pr,po);
-      }catch(e){ /* that day unavailable -> card shows a dash */ }
-    }
-  }catch(e){ /* history entirely unavailable -> cards show today only */ }
-  return out;
-}
+async function historyItems(){ return {}; }
 const MON3=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 function histDayList(){ const l=[]; for(let i=2;i>=1;i--){ const ymd=dubaiYmd(new Date(Date.now()-i*86400000)); const d=new Date(ymd+'T00:00:00Z'); l.push({ymd,lab:d.getUTCDate()+' '+MON3[d.getUTCMonth()]}); } return l; }
 // History footer line inside a stage card: thin divider + "11 Aug 19 · 12 Aug 19" (muted, one line).
@@ -562,29 +544,30 @@ app.http('prpo-email', { methods:['GET','OPTIONS'], authLevel:'function', route:
     const url=new URL(request.url); const dk=url.searchParams.get('division'); const pk=url.searchParams.get('person');
     const wantSend=url.searchParams.get('send')==='1'; const sendAll=wantSend&&!dk&&!pk&&url.searchParams.get('personal')!=='1';
     const items=await loadItems();
+    const datasetMeta={datasetRevision:items.datasetRevision,datasetGeneratedAt:items.datasetGeneratedAt,sourceState:items.sourceState};
     const hist=await historyItems();
     if(dk){ const cfg=DIVS.find(d=>d.key===dk); if(!cfg) return {status:400,jsonBody:{error:'unknown division; use procurement|invoicing|ops_hm|ops_all'}};
       const out=buildDivision(cfg,items,hist);
       if(url.searchParams.get('format')==='html') return {status:200,headers:{'Content-Type':'text/html; charset=utf-8'},body:out.html};
-      if(url.searchParams.get('debug')==='1') return {status:200,jsonBody:{division:dk,count:out.count,value:Math.round(out.value),retired:cfg.send===false}};
+      if(url.searchParams.get('debug')==='1') return {status:200,jsonBody:{...datasetMeta,division:dk,count:out.count,value:Math.round(out.value),retired:cfg.send===false}};
       if(wantSend){ if(cfg.send===false) return {status:400,jsonBody:{division:dk,sent:false,reason:'retired — replaced by personal emails'}}; const s=await sendDivision(out,context); return {status:200,jsonBody:{division:dk,...s}}; }
-      return {status:200,jsonBody:{division:dk,count:out.count,value:Math.round(out.value),retired:cfg.send===false}};
+      return {status:200,jsonBody:{...datasetMeta,division:dk,count:out.count,value:Math.round(out.value),retired:cfg.send===false}};
     }
     if(pk){ const p=groupByOwner(personalPool(items)).find(e=>e.key===_norm(pk));
       if(!p) return {status:404,jsonBody:{error:'no pending items for this user',user:pk,people:groupByOwner(personalPool(items)).map(e=>e.user)}};
       const out=buildPersonal(p,hist);
       if(url.searchParams.get('format')==='html') return {status:200,headers:{'Content-Type':'text/html; charset=utf-8'},body:out.html};
       if(wantSend){ const s=await sendPersonal(out,context); return {status:200,jsonBody:s}; }
-      return {status:200,jsonBody:{user:out.user,email:userEmailMap()[out.key]||null,count:out.count,value:Math.round(out.value)}};
+      return {status:200,jsonBody:{...datasetMeta,user:out.user,email:userEmailMap()[out.key]||null,count:out.count,value:Math.round(out.value)}};
     }
     if(url.searchParams.get('personal')==='1'){ const map=userEmailMap(); const people=[];
       for(const p of groupByOwner(personalPool(items))){ const out=buildPersonal(p,hist); let s={sent:false}; if(wantSend) s=await sendPersonal(out,context); people.push({user:p.user,email:map[p.key]||null,count:out.count,value:Math.round(out.value),...s}); }
-      return {status:200,jsonBody:{testMode:(process.env.PRPO_PERSONAL_TEST||'1')!=='0',sent:wantSend,people}};
+      return {status:200,jsonBody:{...datasetMeta,testMode:(process.env.PRPO_PERSONAL_TEST||'1')!=='0',sent:wantSend,people}};
     }
     const summary=[]; for(const cfg of DIVS){ if(cfg.send===false) continue; const out=buildDivision(cfg,items,hist); let s={sent:false}; if(sendAll) s=await sendDivision(out,context); summary.push({division:cfg.key,count:out.count,value:Math.round(out.value),...s}); }
     const people=[]; for(const p of groupByOwner(personalPool(items))){ const out=buildPersonal(p,hist); let s={sent:false}; if(sendAll) s=await sendPersonal(out,context); people.push({user:p.user,count:out.count,value:Math.round(out.value),...s}); }
-    return {status:200,jsonBody:{sentAll:sendAll,testMode:(process.env.PRPO_PERSONAL_TEST||'1')!=='0',divisions:summary,people}};
+    return {status:200,jsonBody:{...datasetMeta,sentAll:sendAll,testMode:(process.env.PRPO_PERSONAL_TEST||'1')!=='0',divisions:summary,people}};
   }catch(e){ context.error('prpo-email failed:',e); return {status:500,jsonBody:{error:e.message}}; }
 }});
 
-module.exports = { buildItems, buildDivision, buildXlsxBase64, parseXlsx, DIVS, personalPool, groupByOwner, buildPersonal, userEmailMap, historyItems };
+module.exports = { buildItems, buildDivision, buildXlsxBase64, parseXlsx, DIVS, personalPool, groupByOwner, buildPersonal, userEmailMap, historyItems, loadItems };
