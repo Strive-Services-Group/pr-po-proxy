@@ -1,5 +1,7 @@
 # PR/PO Proxy — deploy guide
 
+> **STOP:** This legacy guide targets the out-of-scope `pr-po-dashboard-proxy` app. It must not be used for company PR/PO deployment. The only authorised target is `ssg-prpo-proxy`, and this repository currently has no verified deployment workflow for that app.
+
 Small Azure Function (Node 22) that reads D365 F&O OData and returns dashboard JSON with CORS.
 Endpoints: `GET /api/pr` (working), `GET /api/po` (stub, added after PR is validated).
 
