@@ -18,17 +18,24 @@ async function requireUser(request) {
   });
 }
 
-function cors() {
+function cors(request) {
+  const requestOrigin = (request && request.headers && request.headers.get && request.headers.get('origin')) || '';
+  const allowed = new Set([
+    'https://strive-services-group.github.io',
+    ...String(process.env.ALLOWED_ORIGIN || '').split(',').map(value => value.trim()).filter(Boolean)
+  ]);
+  const origin = allowed.has(requestOrigin) ? requestOrigin : 'https://strive-services-group.github.io';
   return {
-    'Access-Control-Allow-Origin': process.env.ALLOWED_ORIGIN || '*',
+    'Access-Control-Allow-Origin': origin,
     'Access-Control-Allow-Methods': 'GET, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+    'Vary': 'Origin',
     'Cache-Control': 'no-store'
   };
 }
 
 async function serve(kind, request, context) {
-  const headers = { 'Content-Type': 'application/json', ...cors() };
+  const headers = { 'Content-Type': 'application/json', ...cors(request) };
   if (request.method === 'OPTIONS') return { status: 204, headers };
   try {
     const authz = (request.headers.get && request.headers.get('authorization')) || '';
@@ -63,4 +70,4 @@ app.http('dataset', { methods: ['GET', 'OPTIONS'], authLevel: 'anonymous', route
 app.http('pr', { methods: ['GET', 'OPTIONS'], authLevel: 'anonymous', route: 'pr', handler: (req, ctx) => serve('pr', req, ctx) });
 app.http('po', { methods: ['GET', 'OPTIONS'], authLevel: 'anonymous', route: 'po', handler: (req, ctx) => serve('po', req, ctx) });
 
-module.exports = { serve };
+module.exports = { cors, serve };
