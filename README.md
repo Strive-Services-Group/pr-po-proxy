@@ -6,11 +6,11 @@ Small Azure Function that reads purchase requisition (PR) and purchase order (PO
 
 ## Deploys to
 
-The authorised company target for PR/PO work is **`ssg-prpo-proxy`**. This repository does not currently contain a deployment workflow for that app. Its checked-in workflow targets the out-of-scope **`pr-po-dashboard-proxy`** app; do not run or edit that workflow for company deployment. Deploy `ssg-prpo-proxy` only through a separately verified, explicitly authorised path.
+The authorised company target for PR/PO work is **`ssg-prpo-proxy`**. `.github/workflows/deploy-ssg-prpo-proxy.yml` is manual-only and requires the exact tested commit SHA. Waqas must set `AZURE_FUNCTIONAPP_PUBLISH_PROFILE_SSG_PRPO_PROXY`, containing the publish profile for that app. The legacy workflow is disabled and has no push trigger or deployment step.
 
 ## Workbook retirement status
 
-The 7 September 2026 reconciliation concluded **cannot retire**. Current live sources cannot deterministically separate dashboard `PR in review` from `Sourcing`, and the stage thresholds did not pass. The existing workbook-based dashboard, email and snapshot paths remain protected. No live-dataset cutover or deployment was made.
+Correction 01 merges `PR in review` into `Sourcing`, uses live line amounts excluding VAT and follows live PO events. The corrected reconciliation still concludes **cannot retire** because PR stage, PO stage and PR amount gates remain below 95%. The existing workbook-based dashboard, email and snapshot paths remain protected. No live-dataset cutover or deployment was made.
 
 ## Endpoints
 - `GET /api/pr` — assembled purchase requisitions
@@ -34,4 +34,4 @@ Legacy out-of-scope URL (reference only; do not deploy): `https://pr-po-dashboar
 
 ## Source-of-truth note
 
-F&O virtual entities are the source for current headers and lines. The development `ssg_` capture is the source for current approval work items and assignment observations. The workbook remains the production source for workflow detail that those sources cannot reproduce. See the companion repository's `evidence/workbook-retirement-report.md` before changing that boundary.
+F&O virtual entities are the source for current headers and lines. The development `ssg_` capture is the source for current approval work items and assignment observations. The workbook remains the production source for detail that the corrected live model cannot yet reproduce within the gates. See the companion repository's `evidence/workbook-retirement-correction-01.md` before changing that boundary.

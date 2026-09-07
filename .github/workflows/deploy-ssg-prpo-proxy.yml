@@ -1,0 +1,51 @@
+name: Deploy authorised ssg-prpo-proxy
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact tested commit SHA to deploy
+        required: true
+        type: string
+
+concurrency:
+  group: deploy-ssg-prpo-proxy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha }}
+
+      - name: Verify exact source commit
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "${{ inputs.source_sha }}"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Build and test package
+        run: |
+          npm install --omit=dev
+          npm run build --if-present
+          npm run test --if-present
+
+      - name: Require authorised publish profile
+        shell: bash
+        env:
+          PUBLISH_PROFILE: ${{ secrets.AZURE_FUNCTIONAPP_PUBLISH_PROFILE_SSG_PRPO_PROXY }}
+        run: test -n "$PUBLISH_PROFILE"
+
+      - name: Deploy exact package to ssg-prpo-proxy
+        uses: Azure/functions-action@v1
+        with:
+          app-name: ssg-prpo-proxy
+          slot-name: Production
+          package: .
+          publish-profile: ${{ secrets.AZURE_FUNCTIONAPP_PUBLISH_PROFILE_SSG_PRPO_PROXY }}
