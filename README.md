@@ -2,16 +2,21 @@
 
 Small Azure Function that reads purchase requisition (PR) and purchase order (PO) data from D365 Finance & Operations over OData and returns clean JSON for the dashboard. It exists so the public dashboard never holds D365 credentials and so the data can be assembled/cached server-side.
 
-**Companion repo:** [PR-PO-Pipeline-Dashboard](https://github.com/Chandansah605/PR-PO-Pipeline-Dashboard) — the dashboard website that calls this proxy. Same project, kept separate because they deploy to different places.
+**Companion repo:** [PR-PO-Pipeline-Dashboard](https://github.com/Strive-Services-Group/PR-PO-Pipeline-Dashboard) — the dashboard website. Same project, kept separate because the repositories deploy to different places.
 
 ## Deploys to
-Azure Function App **`pr-po-dashboard-proxy`** (Flex Consumption, Node), via Azure **Deployment Center → GitHub Actions**. Pushing to `main` redeploys.
+
+The authorised company target for PR/PO work is **`ssg-prpo-proxy`**. `.github/workflows/deploy-ssg-prpo-proxy.yml` is manual-only and requires the exact tested commit SHA. Waqas must set `AZURE_FUNCTIONAPP_PUBLISH_PROFILE_SSG_PRPO_PROXY`, containing the publish profile for that app. The legacy workflow is disabled and has no push trigger or deployment step.
+
+## Workbook retirement status
+
+Correction 01 merges `PR in review` into `Sourcing`, uses live line amounts excluding VAT and follows live PO events. The corrected reconciliation still concludes **cannot retire** because PR stage, PO stage and PR amount gates remain below 95%. The existing workbook-based dashboard, email and snapshot paths remain protected. No live-dataset cutover or deployment was made.
 
 ## Endpoints
 - `GET /api/pr` — assembled purchase requisitions
 - `GET /api/po` — assembled purchase orders
 
-Base URL: `https://pr-po-dashboard-proxy-b4budzexh7eveved.uaenorth-01.azurewebsites.net`
+Legacy out-of-scope URL (reference only; do not deploy): `https://pr-po-dashboard-proxy-b4budzexh7eveved.uaenorth-01.azurewebsites.net`
 
 ## What it does
 - Authenticates to D365 F&O (client-credentials) using app settings.
@@ -27,5 +32,6 @@ Base URL: `https://pr-po-dashboard-proxy-b4budzexh7eveved.uaenorth-01.azurewebsi
 ## App settings (in the Azure Function App, not in code)
 `TENANT_ID`, `CLIENT_ID`, `CLIENT_SECRET`, `FO_RESOURCE`, `ALLOWED_ORIGIN` (and `DASHBOARD_CLIENT_ID` if token-auth is enabled).
 
-## Note
-The granular workflow "Step name" is a stored `IFAHR*` field in D365 not yet exposed on OData; until the F&O developer exposes it, the dashboard supplies the step from its own export overlay. See the companion repo's README.
+## Source-of-truth note
+
+F&O virtual entities are the source for current headers and lines. The development `ssg_` capture is the source for current approval work items and assignment observations. The workbook remains the production source for detail that the corrected live model cannot yet reproduce within the gates. See the companion repository's `evidence/workbook-retirement-correction-01.md` before changing that boundary.
