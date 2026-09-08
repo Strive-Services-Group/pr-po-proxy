@@ -41,6 +41,7 @@
 const { app } = require('@azure/functions');
 const XLSX = require('xlsx');
 const ExcelJS = require('exceljs');
+const WORK_CLASS_RULE = require('../../work-class-rule.json');
 
 const PR_URL = process.env.PRPO_PR_URL || 'https://strive-services-group.github.io/PR-PO-Pipeline-Dashboard/pr.xlsx';
 const PO_URL = process.env.PRPO_PO_URL || 'https://strive-services-group.github.io/PR-PO-Pipeline-Dashboard/po.xlsx';
@@ -48,8 +49,6 @@ const DASH   = process.env.PRPO_DASH_URL || 'https://strive-services-group.githu
 const FONT = 'Aptos,Segoe UI,Arial,sans-serif', NAVY = '#14315E', RED = '#dc2626', TEAL = '#0f766e', W = 1000;
 
 const PR_MAP = {"Handyman Services_Manager":"Dep Managers","Building Services_Asst. Facility Managers 1":"Dep Managers","PurchReqReviewTask":"PR In Review","Procurement sends inquiry/RFQ to suppliers":"RFQ to suppliers","Quotation received and logged/attached":"Qt received & Logged","Quotation shared to Operations for confirmation":"Qt Shared to Op","Operations confirms material/scope":"OP confirms material","Unit prices updated in PR lines":"Unit Price Updated","Building Services_Asst. Facility Managers 2":"Dep Managers","Building Services_Facilities Manager":"Dep Managers","PAC Services_Manager":"Dep Managers","Concierge Services_Manager":"Dep Managers","Security Services_Manager":"Dep Managers","Home Services_Operations Manager":"Dep Managers","Landscaping_Manager":"Dep Managers","Finance & Accounts_Accounting Manager":"Finance","Facilities Management_Director":"Director","Commercial_Director":"Director","Executive Management_CEO":"CEO"};
-const PROC = new Set(["PR In Review","RFQ to suppliers","Qt received & Logged","OP confirms material","Procurement (in process)"]);
-const OPS = new Set(["Qt Shared to Op","Unit Price Updated"]);
 const PO_MAP = {"Advance payment request submitted (if applicable)":"Procurement","Procurement Manager":"Procurement","Accounting Manager":"Finance","Finance and Accounts Director":"Director","CEO":"CEO","LPO sent/shared with supplier":"Sent to Supplier"};
 const COLOR = {'Procurement':'#3b82f6','Sourcing':'#0ea5e9','Priced — awaiting approval':'#84cc16','Operations to Confirm':'#14b8a6','Dep Managers':'#8b5cf6','Finance':'#22c55e','Director':'#ec4899','CEO':'#f59e0b','Sent to Supplier':'#a855f7','Pending Invoicing':'#f97316','Re-Assigned/Rejected':'#dc2626','Pending Internal':'#14b8a6','Pending Client':'#6366f1','Confirmed Open Order':'#0891b2'};
 const GRAD = {'Procurement':'#eff5ff','Sourcing':'#effbff','Priced — awaiting approval':'#f5fae8','Operations to Confirm':'#ebfbf7','Dep Managers':'#f4f1fe','Finance':'#eefbf3','Director':'#fdeff7','CEO':'#fff9ec','Sent to Supplier':'#f9f2ff','Pending Invoicing':'#fff4e8','Re-Assigned/Rejected':'#fef2f2','Pending Internal':'#ebfbf7','Pending Client':'#eef2ff','Confirmed Open Order':'#ecfeff'};
@@ -64,9 +63,8 @@ function ageDays(v){ const d=xd(v); return d? Math.max(0,Math.floor((Date.now()-
 function ymdStr(v){ const d=xd(v); if(!d) return ''; const p=n=>String(n).padStart(2,'0'); return d.getUTCFullYear()+'-'+p(d.getUTCMonth()+1)+'-'+p(d.getUTCDate()); }
 function avg(l){ return l.length? l.reduce((a,b)=>a+b,0)/l.length : 0; }
 function parseXlsx(buf){ const wb=XLSX.read(buf,{type:'buffer'}); const ws=wb.Sheets[wb.SheetNames[0]]; const aoa=XLSX.utils.sheet_to_json(ws,{header:1,defval:null,raw:true}); if(!aoa.length) return []; const hdr=aoa[0].map(x=>String(x)); const rows=[]; for(let i=1;i<aoa.length;i++){ const o={}; for(let j=0;j<hdr.length;j++) o[hdr[j]]=aoa[i][j]; rows.push(o);} return rows; }
-function prLive(r){ const st=String(r['Status']||''); return !!PR_MAP[r['Step name']] && st.toLowerCase()!=='closed' && st!=='Rejected' && st!=='Cancelled'; }
+function prLive(r){ const st=_norm(r['Status']); return ['draft','in review','approved'].includes(st) && (!!String(r['Stage reason code']||'').trim() || !!PR_MAP[r['Step name']]); }
 function poBucket(r){ const live=String(r['Live stage']||r['Step name']||''); const appr=String(r['Approval status']||''); const pos=String(r['Purchase order status']||''); let b=PO_MAP[r['Step name']]||null; if(['Procurement','Finance','Director','CEO'].includes(live)) b=live; if(live==='Approval — unmapped element'||live==='Not yet sent') b='Procurement'; if(live==='Sent to supplier') b='Sent to Supplier'; if(live==='Receipt posted') b='Pending Invoicing'; if(live==='Invoiced') return null; if(appr==='Rejected'||pos==='Canceled'||pos==='Cancelled'||pos==='Closed'||pos==='Invoiced'||!b) return null; return b; }
-function prHb(b){ return PROC.has(b)?'Procurement':(OPS.has(b)?'Operations to Confirm':b); }
 function prAge(r){ const sd=r['Step date and time']; return ageDays(sd!=null? sd : r['Created date']); }
 function poAge(r){ const sd=r['Step date and time']; return ageDays(sd!=null? sd : (r['Created date and time']!=null? r['Created date and time'] : r['Requested receipt date'])); }
 function clockNote(r){ const p=String(r&&r['Clock provenance']||''); if(p==='SEEDED_FROM_FINAL_WORKBOOK') return ' — since (from last export)'; if(p==='NOT_RECORDED') return ' — since — not recorded'; return ''; }
@@ -88,6 +86,25 @@ function opsUserForDept(d){ return DEPT_OPSUSER[String(d==null?'':d).trim()]||''
 function roleOf(u){ const d=deptForUser(u), ul=_norm(u); if(d==='Accounts & Tax'){ if(ul==='ayman.g') return 'Director'; if(ul==='patrick.smith') return 'CEO'; return 'Finance'; } if(d==='Procurement') return 'Procurement'; return ''; }
 function opsDivFor(reqdept){ return (reqdept==='Home Maintenance Services'||reqdept==='FitOut Services')?'ops_hm':'ops_all'; }
 function prPendingWith(r){ const st=String(r['Status']||''); if(st==='Draft') return String(r['Preparer']||'').trim(); if(st==='Approved') return String(r['Accepted By/Assign To']||'').trim(); return String(r['Pending Approver/User']||'').trim(); }
+const NO_NAMED_OWNER='No named owner';
+function isNoNamedOwner(value){ const v=_norm(value); return !v||v==='(unassigned)'||v==='not recorded'||v.startsWith('no named owner')||v.startsWith('employee number '); }
+function ageBand(days){ if(days==null)return 'Age not recorded'; if(days<=7)return '0–7'; if(days<=30)return '8–30'; if(days<=60)return '31–60'; if(days<=90)return '61–90'; return 'Over 90'; }
+function legacyClassCode(step){
+  if(step==='Unit prices updated in PR lines'||step==='Quotation shared to Operations for confirmation')return 'ACTIVE_LINES_PRICED';
+  if(['Procurement sends inquiry/RFQ to suppliers','Quotation received and logged/attached','Operations confirms material/scope'].includes(step))return 'ACTIVE_LINES_NOT_FULLY_PRICED';
+  return '';
+}
+function workClassFor(r){
+  const supplied=String(r['Stage reason code']||'').trim();
+  const code=supplied||legacyClassCode(String(r['Step name']||'').trim())||'NOT_REPORTED';
+  const rule=WORK_CLASS_RULE.classes[code];
+  if(rule)return {code,label:rule.label,action:rule.action,order:rule.order,rule,fromWorkbook:!!supplied};
+  return {code,label:code==='NOT_REPORTED'?'Work class not reported by workbook':WORK_CLASS_RULE.unknownLabel+' — '+code,action:WORK_CLASS_RULE.unknownAction,order:999,rule:{headerBucket:'Step not reported by F&O'},fromWorkbook:!!supplied};
+}
+function pendingSide(it){
+  if(it.doc!=='PR'||it.stage!=='Operations to Confirm')return '';
+  return String(it.raw['Step name']||'').trim()==='Unit prices updated in PR lines'?'Pending Client':'Pending Internal';
+}
 // Routing: PO -> functional home (Sent-to-Supplier/Procurement->procurement, else finance).
 // PR "Operations to Confirm" bucket (Unit-price-updated / Quotation-shared-to-Ops steps) -> by the REQUISITION's own
 //   department (row Department col), so it lands in the Operations sheets regardless of which procurement user holds it.
@@ -106,23 +123,29 @@ function _unused_itemDivision(it){
   // Operations to Confirm + Dep Managers -> Operations, split by REQUISITION department (unmapped dept -> All-Depts)
   return (it.dept==='Home Maintenance Services'||it.dept==='FitOut Services')?'ops_hm':'ops_all';
 }
-const STAGE_ORDER=[['PR','Re-Assigned/Rejected'],['PR','Procurement'],['PR','Operations to Confirm'],['PR','Dep Managers'],['PR','Finance'],['PR','Director'],['PR','CEO'],['PO','Procurement'],['PO','Finance'],['PO','Director'],['PO','CEO'],['PO','Confirmed Open Order'],['PO','Sent to Supplier'],['PO','Pending Invoicing']];
+const STAGE_ORDER=[['PR','Re-Assigned/Rejected'],['PR','Procurement'],['PR','Operations to Confirm'],['PR','Step not reported by F&O'],['PR','Dep Managers'],['PR','Finance'],['PR','Director'],['PR','CEO'],['PO','Procurement'],['PO','Finance'],['PO','Director'],['PO','CEO'],['PO','Confirmed Open Order'],['PO','Sent to Supplier'],['PO','Pending Invoicing']];
 
 function buildItems(prRows, poRows){
   const items=[];
-  for(const r of prRows){ if(!prLive(r)) continue; const hb=prHb(PR_MAP[r['Step name']]); const rowdept=String(r['Department']||'').trim(); const pw0=prPendingWith(r); const inrev=(String(r['Status']||'').trim()==='In review');
-    const owner=((hb==='Operations to Confirm'?(opsUserForDept(rowdept)||pw0):pw0)||'(unassigned)');
+  for(const r of prRows){ if(!prLive(r)) continue; const work=workClassFor(r); const hb=work.rule.headerBucket||'Step not reported by F&O'; const rowdept=String(r['Department']||'').trim(); const pw0=prPendingWith(r); const inrev=(String(r['Status']||'').trim()==='In review');
+    // New workbooks already carry the shared holder decision in the three compatibility
+    // columns. Keep the legacy operations lookup only while an older workbook is in flight.
+    const owner=((!work.fromWorkbook&&work.code==='ACTIVE_LINES_PRICED'?(opsUserForDept(rowdept)||pw0):pw0)||'(unassigned)');
+    const noNamedOwner=isNoNamedOwner(owner);
     // "All game is with the pending approver": route by roleOf(owner). Where the step's home disagrees with the
     // approver (a bounced-back item) AND the PR is still In review, it lands in the "Re-Assigned/Rejected" bucket of
     // the approver's email (Draft/Approved bounce-candidates are NOT flagged — they take the normal bucket):
     //   - Procurement step, In review, held by an operations person  -> Re-Assigned/Rejected, Operations email
     //   - Operations-to-confirm step, In review, held by procurement  -> Re-Assigned/Rejected, Procurement email
     const rl=roleOf(owner); let stage,div;
-    if(hb==='Sourcing'||hb==='Priced — awaiting approval'){ stage=hb; div='procurement'; }
+    if(noNamedOwner){ stage=hb; div='procurement'; }
+    else if(work.code==='ACTIVE_LINES_NOT_FULLY_PRICED'){ stage='Procurement'; div='procurement'; }
+    else if(work.code==='ACTIVE_LINES_PRICED'){ stage='Operations to Confirm'; div=opsDivFor(rowdept); }
     else if(rl==='Finance'||rl==='Director'||rl==='CEO'){ stage=rl; div='finance'; }
     else if(rl==='Procurement'){ div='procurement'; stage=(hb==='Operations to Confirm'&&inrev)?'Re-Assigned/Rejected':'Procurement'; }
     else { div=opsDivFor(rowdept); stage=(hb==='Procurement'&&inrev)?'Re-Assigned/Rejected':(hb==='Operations to Confirm')?'Operations to Confirm':'Dep Managers'; }
-    items.push({ref:r['Purchase requisition'],doc:'PR',typ:String(r['Purchase requisition']||'').startsWith('CPR')?'CPR':'PR',stage:stage,div:div,age:prAge(r),owner:owner,dept:rowdept,value:amt(r),vendor:'',ppend:true,raw:r}); }
+    const age=prAge(r);
+    items.push({ref:r['Purchase requisition'],doc:'PR',typ:String(r['Purchase requisition']||'').startsWith('CPR')?'CPR':'PR',stage:stage,div:div,age,ageBand:ageBand(age),owner:owner,dept:rowdept,value:amt(r),vendor:'',ppend:true,noNamedOwner,workClassCode:work.code,workClass:work.label,workAction:work.action,classOrder:work.order,raw:r}); }
   // PO: owner + "genuinely pending a person?" flag (In review -> Pending Approver/User, Draft -> Created by; Confirmed/Approved not pending).
   // Vendor stages (Sent-to-Supplier/Pending-Invoicing) route by bucket; every other PO's bucket+division is reconstructed from the holder's role.
   for(const r of poRows){ const bk=poBucket(r); if(!bk) continue; const ven=String(r['Vendor name']||'-').trim(); const poStat=String(r['Approval status']||''); const createdBy=String(r['Created by']||r['Created By']||'').trim(); const poPend=String(r['Pending Approver/User']||'').trim(); const isVenBk=(bk==='Sent to Supplier'||bk==='Pending Invoicing'); let own,ppend; if(isVenBk){ own=ven; ppend=false; } else if(poStat==='In review'){ own=poPend||'(unassigned)'; ppend=true; } else if(poStat==='Draft'){ own=createdBy||'(unassigned)'; ppend=true; } else { own=poPend||'(unassigned)'; ppend=false; }
@@ -130,7 +153,8 @@ function buildItems(prRows, poRows){
     if(bk==='Sent to Supplier'){ stage=bk; div='procurement'; }
     else if(bk==='Pending Invoicing'){ stage=bk; div='finance'; }
     else { const rl=roleOf(own); if(rl==='Finance'||rl==='Director'||rl==='CEO'){ stage=rl; div='finance'; } else if(rl==='Procurement'){ stage='Procurement'; div='procurement'; } else { stage='Procurement'; div='procurement'; } }
-    items.push({ref:r['Purchase order'],doc:'PO',typ:'PO',stage:stage,div:div,age:poAge(r),owner:own,dept:String(r['Department']||'').trim(),value:amt(r),vendor:ven,ppend:ppend,raw:r}); }
+    const age=poAge(r);
+    items.push({ref:r['Purchase order'],doc:'PO',typ:'PO',stage:stage,div:div,age,ageBand:ageBand(age),owner:own,dept:String(r['Department']||'').trim(),value:amt(r),vendor:ven,ppend:ppend,noNamedOwner:false,workClassCode:String(r['Stage reason code']||''),workClass:'Purchase order action',workAction:'Complete the current purchase-order step.',classOrder:100,raw:r}); }
   return items;
 }
 
@@ -209,14 +233,26 @@ function f_dept(its,L,col){
   return finding(L,col,'By department &#8212; where it sits','',b(ent[0][0])+' has the most ('+b(ent[0][1].n)+' items). Full split below &#8212; route to each department head.',
     otable([['Department',210,'l'],['Items',56,'c'],['Breach&gt;7d',82,'c'],['Avg',52,'c'],['Value',130,'r']],rows));
 }
+function f_noNamedOwner(its,L,col){
+  const rows=its.filter(it=>it.doc==='PR'&&it.noNamedOwner); if(!rows.length)return '';
+  const groups=grpBy(rows,it=>(it.workClass||'Work class not reported')+'|'+(it.dept||'Department not reported'));
+  const body=Object.entries(groups).map(([key,list])=>{
+    const split=key.lastIndexOf('|'), cls=key.slice(0,split), dept=key.slice(split+1);
+    const oldest=Math.max(...list.map(it=>Number(it.age)||0));
+    const value=list.reduce((sum,it)=>sum+it.value,0);
+    return [esc(cls),esc(dept),String(list.length),agec(oldest),'AED '+money(value)];
+  }).sort((a,b2)=>Number(b2[2])-Number(a[2]));
+  return finding(L,col,'No named owner',rows.length+' requisitions',b(rows.length)+' requisitions have no named person to receive an action email. They remain visible here until ownership is recorded.',
+    otable([['Class of work',300,'l'],['Department',190,'l'],['Items',54,'c'],['Oldest',58,'c'],['Value',120,'r']],body));
+}
 
 /* ---- divisions ---- */
 const DIVS = [
- {key:'procurement', mail:'PRPO_SUPPLIERS_MAIL_TO', defaultTo:'mohamed.ashraf@striveservicesgroup.com', xlsx:'PRPO_Suppliers_OpenOrders_list.xlsx', title:'Suppliers &amp; Open Orders',
-  heading:'PR / PO Pipeline &#8212; Suppliers &amp; Open Orders', sub:'Sent-to-supplier POs plus confirmed POs with open-order status &#183; member queues arrive as individual action emails', accent:'#a855f7',
+ {key:'procurement', mail:'PRPO_SUPPLIERS_MAIL_TO', defaultTo:'mohamed.ashraf@striveservicesgroup.com', xlsx:'PRPO_Suppliers_OpenOrders_list.xlsx', title:'Suppliers, Open Orders &amp; Unowned PRs',
+  heading:'PR / PO Pipeline &#8212; Suppliers, Open Orders &amp; Unowned PRs', sub:'Supplier-side POs plus requisitions that have no named owner &#183; member queues arrive as individual action emails', accent:'#a855f7',
   pr:[], po:['Confirmed Open Order','Sent to Supplier'], restage:'Confirmed Open Order',
-  match:it=>it.doc==='PO'&&(it.stage==='Sent to Supplier'||(it.ppend===false&&String(it.raw['Approval status']||'')==='Confirmed'&&String(it.raw['Purchase order status']||'')==='Open order')),
-  findings:[f=>f_vendor(f,'Sent to Supplier','A','#a855f7','Sent to Supplier &#8212; awaiting delivery / GRN','Chase the suppliers below for delivery, then move to invoicing.'), f=>f_value(f,'B','#2563eb'), f=>f_oldest(f,'C','#dc2626'), f=>f_sla(f,'D','#e11d48')]},
+  match:it=>(it.doc==='PR'&&it.noNamedOwner)||(it.doc==='PO'&&(it.stage==='Sent to Supplier'||(it.ppend===false&&String(it.raw['Approval status']||'')==='Confirmed'&&String(it.raw['Purchase order status']||'')==='Open order'))),
+  findings:[f=>f_noNamedOwner(f,'A','#dc2626'), f=>f_vendor(f,'Sent to Supplier','B','#a855f7','Sent to Supplier &#8212; awaiting delivery / GRN','Chase the suppliers below for delivery, then move to invoicing.'), f=>f_value(f,'C','#2563eb'), f=>f_oldest(f,'D','#dc2626'), f=>f_sla(f,'E','#e11d48')]},
  {key:'invoicing', mail:'PRPO_INV_MAIL_TO', defaultTo:'muhammad.mustajab@striveservicesgroup.com;mehawil@striveservicesgroup.com;clita.m@striveservicesgroup.com', cc:'ayman.ismail@striveservicesgroup.com;mohamed.ashraf@striveservicesgroup.com', xlsx:'PRPO_PendingInvoicing_list.xlsx', title:'Pending Invoicing',
   heading:'PR / PO Pipeline &#8212; Pending Invoicing', sub:'POs confirmed &amp; received &#8212; awaiting supplier invoice posting by Accounts', accent:'#f97316',
   pr:[], po:['Pending Invoicing'], match:it=>it.stage==='Pending Invoicing',
@@ -230,24 +266,25 @@ const DIVS = [
   pr:['Operations to Confirm','Dep Managers'], po:[], xdepts:new Set(['Home Maintenance Services','FitOut Services']),
   findings:[f=>f_owners(f,'A','#8b5cf6','Pending with &#8212; who is holding the queue'), f=>f_dept(f,'B','#4f46e5'), f=>f_value(f,'C','#2563eb'), f=>f_oldest(f,'D','#dc2626'), f=>f_sla(f,'E','#e11d48')]},
 ];
-function filterDiv(items,cfg){ let fil=items.filter(it=> cfg.match? cfg.match(it) : (itemDivision(it)===cfg.key&&(!cfg.keep||cfg.keep(it))) ); if(cfg.restage) fil=fil.map(it=>it.stage==='Sent to Supplier'?it:Object.assign({},it,{stage:cfg.restage})); return fil; }
+function filterDiv(items,cfg){ let fil=items.filter(it=> cfg.match? cfg.match(it) : (itemDivision(it)===cfg.key&&(!cfg.keep||cfg.keep(it))) ); if(cfg.restage) fil=fil.map(it=>it.doc==='PO'&&it.stage!=='Sent to Supplier'?Object.assign({},it,{stage:cfg.restage}):it); return fil; }
 
 async function buildXlsxBase64(fil, cfg){
   const wb=new ExcelJS.Workbook(); wb.creator='Strive Services Group'; wb.created=new Date();
   const ws=wb.addWorksheet('Open Items', { views:[{ state:'frozen', ySplit:1 }], properties:{ defaultRowHeight:16 } });
   ws.columns=[
     {header:'Ref',key:'ref',width:16},{header:'Doc',key:'doc',width:7},{header:'Quote Ref',key:'qref',width:12},{header:'Stage / Bucket',key:'stage',width:22},
-    {header:'Step name',key:'step',width:34},{header:'Status',key:'status',width:22},{header:'Department',key:'dept',width:26},
+    {header:'Stage reason code',key:'classcode',width:32},{header:'Class of work',key:'workclass',width:58},{header:'What to do',key:'workaction',width:48},
+    {header:'Pending Internal / Client',key:'pendingside',width:25},{header:'Step name',key:'step',width:34},{header:'Status',key:'status',width:22},{header:'Department',key:'dept',width:26},
     {header:'Location',key:'loc',width:22},{header:'Pending With',key:'pend',width:20},{header:'Vendor',key:'vendor',width:30},
-    {header:'Value (AED excl. VAT)',key:'value',width:19},{header:'Age (days)',key:'age',width:11},{header:'Created',key:'created',width:13},
+    {header:'Value (AED excl. VAT)',key:'value',width:19},{header:'Age (days)',key:'age',width:11},{header:'Age band',key:'ageband',width:13},{header:'Created',key:'created',width:13},
     {header:'Step date',key:'stepd',width:13},{header:'Clock source',key:'clocksrc',width:24},{header:'Title / Name',key:'title',width:34},{header:'Preparer / Linked PR',key:'prep',width:20}
   ];
-  fil.slice().sort((a,b2)=>(b2.age||0)-(a.age||0)).forEach(it=>{ const r=it.raw; let status,loc,ven,created,stepd,title,prep;
+  fil.slice().sort((a,b2)=>(a.classOrder||999)-(b2.classOrder||999)||String(a.dept||'').localeCompare(String(b2.dept||''))||(b2.age||0)-(a.age||0)||b2.value-a.value).forEach(it=>{ const r=it.raw; let status,loc,ven,created,stepd,title,prep;
     if(it.doc!=='PO'){ status=String(r['Status']||''); loc=r['Location']; ven=''; created=ymdStr(r['Created date']); stepd=ymdStr(r['Step date and time']); title=r['Name']; prep=r['Preparer']; }
     else { status=(String(r['Approval status']||'')+' / '+String(r['Purchase order status']||'')).replace(/^ \/ | \/ $/g,''); loc=r['Location']; ven=r['Vendor name']; created=ymdStr(r['Created date and time']); stepd=ymdStr(r['Step date and time']); title=''; prep=r['Purchase requisition']; }
     const pend=it.owner;  // computed owner: ops-user for ops-confirm, Created-by for Draft POs, approver otherwise
     const qref=(it.doc!=='PO'? String(r['Quotation reference']||'') : '');
-    ws.addRow({ref:it.ref,doc:it.typ,qref,stage:it.stage,step:r['Step name'],status,dept:it.dept,loc,pend,vendor:ven,value:Math.round((it.value||0)*100)/100,age:(it.age==null?null:it.age),created,stepd,clocksrc:it.doc==='PO'?(r['Clock label']||'since'):'',title,prep}); });
+    ws.addRow({ref:it.ref,doc:it.typ,qref,stage:it.stage,classcode:it.workClassCode,workclass:it.workClass,workaction:it.workAction,pendingside:it.pendingSide||pendingSide(it),step:r['Step name'],status,dept:it.dept,loc,pend,vendor:ven,value:Math.round((it.value||0)*100)/100,age:(it.age==null?null:it.age),ageband:it.ageBand,created,stepd,clocksrc:it.doc==='PO'?(r['Clock label']||'since'):'',title,prep}); });
   const DIVCOL={procurement:'FF1D4ED8',finance:'FF16A34A',ops_hm:'FF0F766E',ops_all:'FF7C3AED'};
   const HEAD=DIVCOL[cfg&&cfg.key]||'FF14315E';
   const h=ws.getRow(1); h.height=26;
@@ -261,7 +298,7 @@ async function buildXlsxBase64(fil, cfg){
     const av=ac.value; if(typeof av==='number'){ ac.font={bold:true,size:10.5,color:{argb: av>30?'FFB42318': av>7?'FF9A6700':'FF1F7A33'}}; }
     row.getCell('doc').alignment={vertical:'middle',horizontal:'center'};
   }
-  ws.autoFilter={ from:{row:1,column:1}, to:{row:1,column:17} };
+  ws.autoFilter={ from:{row:1,column:1}, to:{row:1,column:ws.columns.length} };
   const buf=await wb.xlsx.writeBuffer();
   return Buffer.from(buf).toString('base64');
 }
@@ -376,26 +413,26 @@ const USER_MANAGER={
 const _MGR={}; for(const k in USER_MANAGER) _MGR[_norm(k)]=USER_MANAGER[k];
 function managerFor(key){ return _MGR[key]||''; }
 function userEmailMap(){ const m={}; for(const k in USER_EMAIL) m[_norm(k)]=USER_EMAIL[k]; try{ const j=JSON.parse(process.env.PRPO_USER_EMAILS||'{}'); for(const k in j) m[_norm(k)]=String(j[k]||'').trim(); }catch(e){} return m; }
-function personalPool(items){ return items.filter(it=>it.ppend!==false && it.stage!=='Director'&&it.stage!=='CEO'&&it.stage!=='Sent to Supplier'&&it.stage!=='Pending Invoicing' && String(it.owner==null?'':it.owner).trim()!=='' && it.owner!=='(unassigned)'); }
+function personalPool(items){ return items.filter(it=>it.ppend!==false && !it.noNamedOwner && it.stage!=='Director'&&it.stage!=='CEO'&&it.stage!=='Sent to Supplier'&&it.stage!=='Pending Invoicing' && String(it.owner==null?'':it.owner).trim()!=='' && it.owner!=='(unassigned)'); }
 // Same human appears under both full-name and username F&O accounts — fold them into one personal email.
 const USER_ALIAS={'dinesh laxman laxman':'dinesh.laxman','gokul krishna pillai':'Gokul.Krishna','pramod chandrasenan chandrasenan':'pramod.c','shijil choyaprath chandran':'shijil.c','zaheer ahmed ameer':'Zaheer.Ahmed','d365crm admin':'it.solutions','d365crmadmin':'it.solutions','it department':'it.solutions'};
 function canonOwner(u){ return USER_ALIAS[_norm(u)]||u; }
 function groupByOwner(pool){ const g={}; for(const it of pool){ const cu=canonOwner(it.owner); const k=_norm(cu); const e=g[k]||(g[k]={key:k,items:[],disp:{}}); e.items.push(it); e.disp[cu]=(e.disp[cu]||0)+1; } return Object.values(g).map(e=>({key:e.key,user:Object.entries(e.disp).sort((a,b2)=>b2[1]-a[1])[0][0],items:e.items})).sort((a,b2)=>b2.items.length-a.items.length); }
 function firstName(u){ const t=String(u==null?'':u).trim().split(/[.\s]+/)[0]||''; return t? t.charAt(0).toUpperCase()+t.slice(1) : 'there'; }
-const PW=760;
+const PW=1000;
 function pcard(label,val,sub,col,bg,vs){ return '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;background:'+bg+';border:1px solid #e8ecf2;border-top:3px solid '+col+';border-radius:10px;box-shadow:0 1px 3px rgba(16,24,40,0.08);"><tr><td height="92" valign="middle" style="padding:11px 13px;height:92px;"><div style="font-family:'+FONT+';font-size:9.5px;font-weight:800;color:#5b6b7f;text-transform:uppercase;">'+label+'</div><div style="margin:6px 0 2px;white-space:nowrap;font-family:'+FONT+';font-size:'+(vs||24)+'px;font-weight:800;color:'+col+';">'+val+'</div><div style="font-family:'+FONT+';font-size:11px;font-weight:700;color:'+TEAL+';white-space:nowrap;">'+sub+'</div></td></tr></table>'; }
 function buildPersonal(p,hist){
-  const fil=p.items.slice().sort((a,b2)=>(b2.age||0)-(a.age||0));
+  const fil=p.items.slice().sort((a,b2)=>(a.classOrder||999)-(b2.classOrder||999)||String(a.dept||'').localeCompare(String(b2.dept||''))||(b2.age||0)-(a.age||0)||b2.value-a.value);
   const n=fil.length, totv=fil.reduce((a,it)=>a+it.value,0);
   const prn=fil.filter(it=>it.doc!=='PO').length, pon=n-prn;
-  const old=fil[0], oldAge=Math.round((old&&old.age)||0);
+  const old=fil.slice().sort((a,b2)=>(b2.age||0)-(a.age||0))[0], oldAge=Math.round((old&&old.age)||0);
   const br=fil.filter(it=>(it.age||0)>7).length;
   const stamp=new Date(Date.now()+4*3600*1000).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric',timeZone:'UTC'});
   // Operations-to-Confirm split (per CK): "Unit prices updated" = shared with the CLIENT for confirmation ->
   // "Pending Client" (cards + Excel only, NOT the body table); every other ops-confirm step -> "Pending Internal".
   const CLIENT_STEP='Unit prices updated in PR lines';
   const pst=it=>it.stage==='Operations to Confirm'?(String(it.raw['Step name']||'').trim()===CLIENT_STEP?'Pending Client':'Pending Internal'):it.stage;
-  const xfil=fil.map(it=>Object.assign({},it,{stage:pst(it)}));
+  const xfil=fil.map(it=>Object.assign({},it,{pendingSide:pst(it),stage:pst(it)}));
   const G=12, TW=268, cw=Math.floor((PW-G*3-TW)/3);
   const gutter='<td width="'+G+'" style="width:'+G+'px;font-size:6px;line-height:6px;mso-line-height-rule:exactly;">&#160;</td>';
   // First card = 3-day pending trend (11th / 12th / Today); Total value, Oldest, SLA cards stay.
@@ -404,7 +441,7 @@ function buildPersonal(p,hist){
   const defs=[['Total value','AED '+money(totv),'across your queue','#0f766e','#ebfbf7',17],
               ['Oldest item',oldAge+'d',esc(old?String(old.ref):'-'),'#dc2626','#fef2f2',22],
               ['Past 7-day SLA',String(br),'of '+n+' item'+(n===1?'':'s'),'#f59e0b','#fff9ec',22]];
-  const cardsHtml='<table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:separate;"><tr><td width="'+TW+'" valign="top" style="width:'+TW+'px;">'+trendCard+'</td>'+gutter+defs.map((c,i)=>'<td width="'+cw+'" valign="top" style="width:'+cw+'px;">'+pcard(c[0],c[1],c[2],c[3],c[4],c[5])+'</td>'+(i<defs.length-1?gutter:'')).join('')+'</tr></table><div style="height:'+G+'px;font-size:'+G+'px;line-height:'+G+'px;">&#160;</div>';
+  const cardsHtml='<table class="summary-grid" role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:separate;"><tr><td width="'+TW+'" valign="top" style="width:'+TW+'px;">'+trendCard+'</td>'+gutter+defs.map((c,i)=>'<td width="'+cw+'" valign="top" style="width:'+cw+'px;">'+pcard(c[0],c[1],c[2],c[3],c[4],c[5])+'</td>'+(i<defs.length-1?gutter:'')).join('')+'</tr></table><div style="height:'+G+'px;font-size:'+G+'px;line-height:'+G+'px;">&#160;</div>';
   // Stage cards row — merged per STAGE (no PR/PO duplicates; doc split already shown on "Items pending").
   // Rendered only when the person has MORE than one stage; a single redundant stage card is dropped.
   const sagg={}; for(const it of xfil){ const x=sagg[it.stage]||(sagg[it.stage]={n:0,sum:0,c:0,amt:0}); x.n++; x.amt+=it.value; if(it.age!=null){x.sum+=it.age;x.c++;} }
@@ -416,22 +453,38 @@ function buildPersonal(p,hist){
   const strFn=s=>hdays.map(hd=>({lab:hd.lab,n:histStage[hd.ymd]?String(histStage[hd.ymd][s]||0):'&#8211;'}));
   const scard2=(bk,x,tr)=>{ const a=x.c?(x.sum/x.c):0; return '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;background:'+(GRAD[bk]||'#f6f8fb')+';border:1px solid #e8ecf2;border-top:3px solid '+(COLOR[bk]||NAVY)+';border-radius:10px;box-shadow:0 1px 3px rgba(16,24,40,0.08);"><tr><td style="padding:11px 13px;"><div style="font-family:'+FONT+';font-size:9.5px;font-weight:800;color:#5b6b7f;text-transform:uppercase;">'+esc(bk)+'</div><div style="margin:6px 0 2px;white-space:nowrap;"><span style="font-family:'+FONT+';font-size:24px;font-weight:800;color:'+(COLOR[bk]||NAVY)+';">'+x.n+'</span><span style="font-family:'+FONT+';font-size:12px;font-weight:800;color:'+RED+';"> ('+a.toFixed(1)+'d)</span>'+deltaBadge(tr,x.n)+'</div><div style="font-family:'+FONT+';font-size:11px;font-weight:700;color:'+TEAL+';">AED '+money(x.amt)+'</div>'+histLine(tr)+'</td></tr></table>'; };
   const cw2=Math.min(200,Math.floor((PW-G*Math.max(0,sl.length-1))/Math.max(1,sl.length)));
-  const stageCards=sl.length>1?'<table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:separate;"><tr>'+sl.map((s,i)=>'<td width="'+cw2+'" valign="top" style="width:'+cw2+'px;">'+scard2(s,sagg[s],strFn(s))+'</td>'+(i<sl.length-1?gutter:'')).join('')+'</tr></table><div style="height:'+G+'px;font-size:'+G+'px;line-height:'+G+'px;">&#160;</div>':'';
-  // Body table: Pending-Client items stay OUT (they are with the client) — cards + attached Excel only.
-  const tfil=xfil.filter(it=>it.stage!=='Pending Client');
-  const clientN=n-tfil.length;
-  const rows=tfil.slice(0,25).map(it=>['<span style="font-weight:700;color:'+NAVY+';">'+esc(it.ref)+'</span>',sv(it.typ,TYCOL[it.typ]),esc(String(it.doc==='PO'?(it.raw['Vendor name']||'-'):(it.raw['Name']||'-')).slice(0,30)),esc(String(it.raw['Step name']||'-').slice(0,24)+clockNote(it.raw)),esc(String(it.dept||'-').slice(0,16)),'AED '+money(it.value),agec(it.age)]);
-  const tbl=otable([['Ref',90,'l'],['Type',36,'c'],['Description / Vendor',148,'l'],['Waiting on step',116,'l'],['Department',90,'l'],['Value',84,'r'],['Age',40,'c']],rows);
-  const more=(tfil.length>25?'<div style="font-family:'+FONT+';font-size:11.5px;color:#7688a0;margin:7px 0 0;">&#8230;and <b style="color:'+NAVY+';">'+(tfil.length-25)+'</b> more &#8212; the attached Excel has your complete list.</div>':'')
-    +(clientN>0?'<div style="font-family:'+FONT+';font-size:11.5px;color:#4b5c74;margin:7px 0 0;">'+sv(String(clientN)+' Pending-Client item'+(clientN===1?'':'s'),COLOR['Pending Client'])+' (unit prices shared with the client for confirmation) are summarised in the cards above and listed in the attached Excel.</div>':'');
+  const stageCards=sl.length>1?'<table class="summary-grid" role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:separate;"><tr>'+sl.map((s,i)=>'<td width="'+cw2+'" valign="top" style="width:'+cw2+'px;">'+scard2(s,sagg[s],strFn(s))+'</td>'+(i<sl.length-1?gutter:'')).join('')+'</tr></table><div style="height:'+G+'px;font-size:'+G+'px;line-height:'+G+'px;">&#160;</div>':'';
+  const prItems=xfil.filter(it=>it.doc==='PR');
+  const classGroups=grpBy(prItems,it=>it.workClassCode||'NOT_REPORTED');
+  const classKeys=Object.keys(classGroups).sort((a,b2)=>(classGroups[a][0].classOrder||999)-(classGroups[b2][0].classOrder||999));
+  const classSummary=classKeys.length?'<div style="font-family:'+FONT+';font-size:11.5px;color:#4b5c74;line-height:1.65;margin:0 0 12px;"><b style="color:'+NAVY+';">Shape of your PR queue:</b> '+classKeys.map(k=>esc(classGroups[k][0].workClass)+' <b style="color:'+NAVY+';">'+classGroups[k].length+'</b>').join(' &#183; ')+'</div>':'';
+  const sectionMeta=[];
+  const detailTable=list=>'<div class="detail-scroll">'+otable([['PR #',84,'l'],['Site',92,'l'],['Description',142,'l'],['Class of work',180,'l'],['Department',118,'l'],['Value',82,'r'],['Age',42,'c'],['Band',56,'c'],['Queue',72,'l']],list.map(it=>[
+    '<span style="font-weight:700;color:'+NAVY+';">'+esc(it.ref)+'</span>',esc(String(it.raw['Location']||'-').slice(0,22)),esc(String(it.raw['Name']||'-').slice(0,34)),esc(it.workClass),esc(it.dept||'-'),'AED '+money(it.value),agec(it.age),esc(it.ageBand),esc(it.pendingSide==='Pending Client'||it.pendingSide==='Pending Internal'?it.pendingSide:'—')
+  ]))+'</div>';
+  const sectionHtml=classKeys.map(code=>{
+    const items=classGroups[code], first=items[0], deptGroups=grpBy(items,it=>it.dept||'Department not reported');
+    const depts=Object.keys(deptGroups).sort((a,b2)=>deptGroups[b2].length-deptGroups[a].length||a.localeCompare(b2));
+    sectionMeta.push({code,label:first.workClass,count:items.length,departments:depts.map(dept=>({department:dept,count:deptGroups[dept].length}))});
+    const deptHtml=depts.map(dept=>{
+      const rows=deptGroups[dept].slice().sort((a,b2)=>(b2.age||0)-(a.age||0)||b2.value-a.value);
+      return '<div style="font-family:'+FONT+';font-size:12px;font-weight:800;color:'+NAVY+';margin:10px 0 6px;">'+esc(dept)+' &#183; '+rows.length+'</div>'
+        +detailTable(rows);
+    }).join('');
+    return '<div style="border-left:4px solid '+(COLOR[first.stage]||'#145A95')+';padding-left:12px;margin:18px 0 8px;"><div style="font-family:'+FONT+';font-size:15px;font-weight:800;color:'+NAVY+';">'+esc(first.workClass)+' &#183; '+items.length+'</div><div style="font-family:'+FONT+';font-size:11.5px;color:#607083;margin-top:2px;">'+esc(first.workAction)+'</div></div>'+deptHtml;
+  }).join('');
+  const poItems=xfil.filter(it=>it.doc==='PO').sort((a,b2)=>(b2.age||0)-(a.age||0)||b2.value-a.value);
+  if(poItems.length)sectionMeta.push({code:'PO_ACTION',label:'Purchase order action',count:poItems.length,departments:[]});
+  const poHtml=poItems.length?'<div style="border-left:4px solid #0891b2;padding-left:12px;margin:18px 0 8px;"><div style="font-family:'+FONT+';font-size:15px;font-weight:800;color:'+NAVY+';">Purchase order action &#183; '+poItems.length+'</div></div><div class="detail-scroll">'+otable([['PO #',95,'l'],['Vendor',190,'l'],['Department',145,'l'],['Step',170,'l'],['Value',105,'r'],['Age',50,'c'],['Band',70,'c']],poItems.map(it=>['<span style="font-weight:700;color:'+NAVY+';">'+esc(it.ref)+'</span>',esc(it.vendor||'-'),esc(it.dept||'-'),esc(String(it.raw['Step name']||'-')+clockNote(it.raw)),'AED '+money(it.value),agec(it.age),esc(it.ageBand)]))+'</div>':'';
+  const clientN=xfil.filter(it=>it.pendingSide==='Pending Client').length;
   const att='<div style="border:1px solid #cbd9ec;background:#f2f7ff;padding:10px 13px;margin:0 0 2px;border-radius:8px;font:400 12px '+HF+';color:#334867;">&#8505;&#65039; <b style="color:'+HNAVY+';">Data source of truth:</b> live F&amp;O PR / PO data (Dynamics 365 Finance &amp; Operations) &#183; refreshed daily.</div>';
-  const inner='<div style="width:'+PW+'px;font-family:'+FONT+';color:#22303c;">'
+  const inner='<div class="mail-inner" style="width:'+PW+'px;font-family:'+FONT+';color:#22303c;">'
     +'<div style="font:400 13px '+HF+';color:#334155;margin:0 0 8px;">Hi <b style="color:'+HNAVY+';">'+esc(firstName(p.user))+'</b> &#8212; you have '+b(n)+' open PR / PO item'+(n===1?'':'s')+' pending your action, totalling '+b('AED '+money(totv))+'.'+(oldAge>0?' The oldest has been waiting '+b(oldAge+' days')+'.':'')+'</div>'
     +cardsHtml+stageCards+att
     +'<div style="font-family:'+FONT+';font-weight:800;font-size:15px;color:'+NAVY+';margin:16px 0 2px;">&#128203; Your pending items</div>'
-    +'<div style="font-family:'+FONT+';font-size:11.5px;color:#7688a0;margin:0 0 9px;">Oldest first &#183; age = days at the current workflow step &#183; showing '+Math.min(25,tfil.length)+' of '+n+(clientN>0?' (Pending-Client items in cards &amp; Excel)':'')+'.</div>'
-    +tbl+more+'</div>';
-  const shell='<table role="presentation" width="'+(PW+40)+'" cellpadding="0" cellspacing="0" style="width:'+(PW+40)+'px;max-width:'+(PW+40)+'px;">'
+    +'<div style="font-family:'+FONT+';font-size:11.5px;color:#7688a0;margin:0 0 9px;">Class first &#183; department next &#183; oldest then largest &#183; age = days at the current workflow step'+(clientN>0?' &#183; Queue shows Pending Internal or Pending Client':'')+'.</div>'
+    +classSummary+sectionHtml+poHtml+'</div>';
+  const shell='<table class="mail-shell" role="presentation" width="'+(PW+40)+'" cellpadding="0" cellspacing="0" style="width:'+(PW+40)+'px;max-width:'+(PW+40)+'px;">'
     +'<tr><td style="background:'+HNAVY+';padding:16px 20px;border-bottom:3px solid '+HGOLD+';border-radius:14px 14px 0 0;"><table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>'
     +'<td style="font:700 19px '+HF+';color:#fff;">Your PR / PO Action List</td>'
     +'<td align="right" valign="top" style="font:600 12px '+HF+';color:'+HGOLD+';">'+stamp+'</td></tr></table>'
@@ -443,11 +496,11 @@ function buildPersonal(p,hist){
   const heading='Your PR / PO Action List &#8212; '+esc(p.user);
   const wrap='<!doctype html><html xmlns:o="urn:schemas-microsoft-com:office:office"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="X-UA-Compatible" content="IE=edge"><title>'+heading+'</title>'
     +'<!--[if mso]><xml><o:OfficeDocumentSettings><o:PixelsPerInch>96</o:PixelsPerInch></o:OfficeDocumentSettings></xml><![endif]-->'
-    +'<style>table{mso-table-lspace:0pt;mso-table-rspace:0pt;border-collapse:collapse;} td{mso-line-height-rule:exactly;} img{-ms-interpolation-mode:bicubic;} body{-webkit-text-size-adjust:100%;-ms-text-size-adjust:100%;}</style></head>'
+    +'<style>table{mso-table-lspace:0pt;mso-table-rspace:0pt;border-collapse:collapse;} td{mso-line-height-rule:exactly;} img{-ms-interpolation-mode:bicubic;} body{-webkit-text-size-adjust:100%;-ms-text-size-adjust:100%;}@media only screen and (max-width:640px){html,body{width:100%!important;margin:0!important;overflow-x:hidden!important}body>table,body>table>tbody,body>table>tbody>tr,body>table>tbody>tr>td,.mail-shell,.mail-shell>tbody,.mail-shell>tbody>tr,.mail-shell>tbody>tr>td{display:block!important;width:100%!important;max-width:100%!important;box-sizing:border-box!important}.mail-inner{display:block!important;width:100%!important;max-width:100%!important;min-width:0!important;box-sizing:border-box!important}.summary-grid,.summary-grid>tbody,.summary-grid>tbody>tr{display:block!important;width:100%!important;max-width:100%!important}.summary-grid>tbody>tr>td{display:block!important;width:auto!important;max-width:100%!important;margin-bottom:8px!important}.summary-grid>tbody>tr>td[width="12"]{display:none!important}.detail-scroll{display:block!important;width:100%!important;max-width:100%!important;overflow-x:auto!important;-webkit-overflow-scrolling:touch}}</style></head>'
     +'<body style="margin:0;padding:0;background:#EEF1F6;"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#EEF1F6;padding:20px 0;"><tr><td align="center">'+shell+'</td></tr></table></body></html>';
   const subject='Action needed — '+n+' PR/PO item'+(n===1?'':'s')+' pending with you ('+stamp+')';
   const xlsx='PRPO_'+p.user.replace(/[^\w.-]+/g,'_')+'_pending.xlsx';
-  return { subject, html:wrap, fil:xfil, count:n, value:totv, user:p.user, key:p.key, xlsx };
+  return { subject, html:wrap, fil:xfil, count:n, value:totv, user:p.user, key:p.key, xlsx, sections:sectionMeta, classCounts:Object.fromEntries(classKeys.map(k=>[k,classGroups[k].length])) };
 }
 async function sendPersonal(out, context){
   const from=process.env.PRPO_MAIL_FROM||process.env.MAIL_FROM;

@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "unknownLabel": "Work class not recognised",
+  "unknownAction": "Check the requisition and classify the next action.",
+  "classes": {
+    "ACTIVE_LINES_PRICED": {
+      "order": 1,
+      "label": "Prices are in — waiting for you to confirm",
+      "action": "Confirm the material, scope and price.",
+      "holderMode": "departmentOperations",
+      "headerBucket": "Operations to Confirm",
+      "workbookStep": "Unit prices updated in PR lines"
+    },
+    "ACTIVE_LINES_NOT_FULLY_PRICED": {
+      "order": 2,
+      "label": "With procurement to price",
+      "action": "Procurement must obtain and complete the pricing.",
+      "holderMode": "pending",
+      "headerBucket": "Procurement",
+      "workbookStep": "Procurement sends inquiry/RFQ to suppliers"
+    },
+    "NO_CURRENT_WORK_ITEM": {
+      "order": 3,
+      "label": "Nobody assigned in F&O — sitting with the person who raised it",
+      "action": "The person who raised it must move it forward.",
+      "holderMode": "preparer",
+      "headerBucket": "Step not reported by F&O",
+      "workbookStep": "PurchReqReviewTask"
+    },
+    "UNMAPPED_ELEMENT": {
+      "order": 4,
+      "label": "At an approval step F&O cannot name",
+      "action": "Check the requisition and identify the approver.",
+      "holderMode": "pending",
+      "headerBucket": "Step not reported by F&O",
+      "workbookStep": "PurchReqReviewTask"
+    },
+    "ZERO_ACTIVE_LINES": {
+      "order": 5,
+      "label": "No live lines",
+      "action": "Review the requisition lines or close the request.",
+      "holderMode": "preparer",
+      "headerBucket": "Step not reported by F&O",
+      "workbookStep": "PurchReqReviewTask"
+    },
+    "APPROVAL_CAPTURE": {
+      "order": 6,
+      "label": "Approval recorded",
+      "action": "Check that the requisition moves to its next step.",
+      "holderMode": "pending",
+      "headerBucket": "Step not reported by F&O",
+      "workbookStep": "PurchReqReviewTask"
+    }
+  }
+}
