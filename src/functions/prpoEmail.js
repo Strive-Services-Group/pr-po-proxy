@@ -41,12 +41,13 @@
 const { app } = require('@azure/functions');
 const XLSX = require('xlsx');
 const ExcelJS = require('exceljs');
-const { getDataset } = require('../shared/prpoDataset');
 
+const PR_URL = process.env.PRPO_PR_URL || 'https://strive-services-group.github.io/PR-PO-Pipeline-Dashboard/pr.xlsx';
+const PO_URL = process.env.PRPO_PO_URL || 'https://strive-services-group.github.io/PR-PO-Pipeline-Dashboard/po.xlsx';
 const DASH   = process.env.PRPO_DASH_URL || 'https://strive-services-group.github.io/PR-PO-Pipeline-Dashboard/';
 const FONT = 'Aptos,Segoe UI,Arial,sans-serif', NAVY = '#14315E', RED = '#dc2626', TEAL = '#0f766e', W = 1000;
 
-const PR_MAP = {"Sourcing":"Sourcing","Priced — awaiting approval":"Priced — awaiting approval","Dep Managers":"Dep Managers","Finance":"Finance","Director":"Director","CEO":"CEO"};
+const PR_MAP = {"Handyman Services_Manager":"Dep Managers","Building Services_Asst. Facility Managers 1":"Dep Managers","PurchReqReviewTask":"PR In Review","Procurement sends inquiry/RFQ to suppliers":"RFQ to suppliers","Quotation received and logged/attached":"Qt received & Logged","Quotation shared to Operations for confirmation":"Qt Shared to Op","Operations confirms material/scope":"OP confirms material","Unit prices updated in PR lines":"Unit Price Updated","Building Services_Asst. Facility Managers 2":"Dep Managers","Building Services_Facilities Manager":"Dep Managers","PAC Services_Manager":"Dep Managers","Concierge Services_Manager":"Dep Managers","Security Services_Manager":"Dep Managers","Home Services_Operations Manager":"Dep Managers","Landscaping_Manager":"Dep Managers","Finance & Accounts_Accounting Manager":"Finance","Facilities Management_Director":"Director","Commercial_Director":"Director","Executive Management_CEO":"CEO"};
 const PROC = new Set(["PR In Review","RFQ to suppliers","Qt received & Logged","OP confirms material","Procurement (in process)"]);
 const OPS = new Set(["Qt Shared to Op","Unit Price Updated"]);
 const PO_MAP = {"Advance payment request submitted (if applicable)":"Procurement","Procurement Manager":"Procurement","Accounting Manager":"Finance","Finance and Accounts Director":"Director","CEO":"CEO","LPO sent/shared with supplier":"Sent to Supplier"};
@@ -63,7 +64,7 @@ function ageDays(v){ const d=xd(v); return d? Math.max(0,Math.floor((Date.now()-
 function ymdStr(v){ const d=xd(v); if(!d) return ''; const p=n=>String(n).padStart(2,'0'); return d.getUTCFullYear()+'-'+p(d.getUTCMonth()+1)+'-'+p(d.getUTCDate()); }
 function avg(l){ return l.length? l.reduce((a,b)=>a+b,0)/l.length : 0; }
 function parseXlsx(buf){ const wb=XLSX.read(buf,{type:'buffer'}); const ws=wb.Sheets[wb.SheetNames[0]]; const aoa=XLSX.utils.sheet_to_json(ws,{header:1,defval:null,raw:true}); if(!aoa.length) return []; const hdr=aoa[0].map(x=>String(x)); const rows=[]; for(let i=1;i<aoa.length;i++){ const o={}; for(let j=0;j<hdr.length;j++) o[hdr[j]]=aoa[i][j]; rows.push(o);} return rows; }
-function prLive(r){ const st=String(r['Status']||'').trim().toLowerCase(); return !!PR_MAP[r['Step name']] && ['in review','approved'].includes(st); }
+function prLive(r){ const st=String(r['Status']||''); return !!PR_MAP[r['Step name']] && st.toLowerCase()!=='closed' && st!=='Rejected' && st!=='Cancelled'; }
 function poBucket(r){ const live=String(r['Live stage']||r['Step name']||''); const appr=String(r['Approval status']||''); const pos=String(r['Purchase order status']||''); let b=PO_MAP[r['Step name']]||null; if(['Procurement','Finance','Director','CEO'].includes(live)) b=live; if(live==='Approval — unmapped element'||live==='Not yet sent') b='Procurement'; if(live==='Sent to supplier') b='Sent to Supplier'; if(live==='Receipt posted') b='Pending Invoicing'; if(live==='Invoiced') return null; if(appr==='Rejected'||pos==='Canceled'||pos==='Cancelled'||pos==='Closed'||pos==='Invoiced'||!b) return null; return b; }
 function prHb(b){ return PROC.has(b)?'Procurement':(OPS.has(b)?'Operations to Confirm':b); }
 function prAge(r){ const sd=r['Step date and time']; return ageDays(sd!=null? sd : r['Created date']); }
@@ -105,7 +106,7 @@ function _unused_itemDivision(it){
   // Operations to Confirm + Dep Managers -> Operations, split by REQUISITION department (unmapped dept -> All-Depts)
   return (it.dept==='Home Maintenance Services'||it.dept==='FitOut Services')?'ops_hm':'ops_all';
 }
-const STAGE_ORDER=[['PR','Re-Assigned/Rejected'],['PR','Sourcing'],['PR','Priced — awaiting approval'],['PR','Dep Managers'],['PR','Finance'],['PR','Director'],['PR','CEO'],['PO','Procurement'],['PO','Finance'],['PO','Director'],['PO','CEO'],['PO','Confirmed Open Order'],['PO','Sent to Supplier'],['PO','Pending Invoicing']];
+const STAGE_ORDER=[['PR','Re-Assigned/Rejected'],['PR','Procurement'],['PR','Operations to Confirm'],['PR','Dep Managers'],['PR','Finance'],['PR','Director'],['PR','CEO'],['PO','Procurement'],['PO','Finance'],['PO','Director'],['PO','CEO'],['PO','Confirmed Open Order'],['PO','Sent to Supplier'],['PO','Pending Invoicing']];
 
 function buildItems(prRows, poRows){
   const items=[];
@@ -495,7 +496,14 @@ async function sendDivision(out, context){
 }
 
 async function fetchXlsx(url){ const r=await fetch(url+(url.includes('?')?'&':'?')+'t='+Date.now()); if(!r.ok) throw new Error('fetch '+r.status+' '+url); return parseXlsx(Buffer.from(await r.arrayBuffer())); }
-async function loadItems(){ const dataset=await getDataset(); const items=buildItems(dataset.pr.rows,dataset.po.rows); items.datasetRevision=dataset.revision; items.datasetGeneratedAt=dataset.generatedAt; items.sourceState=dataset.sourceState; return items; }
+async function loadItems(){
+  const [prRows,poRows]=await Promise.all([fetchXlsx(PR_URL),fetchXlsx(PO_URL)]);
+  const items=buildItems(prRows,poRows);
+  items.datasetRevision='temporary-workbook-routing-fallback';
+  items.datasetGeneratedAt=null;
+  items.sourceState='WORKBOOK_FALLBACK';
+  return items;
+}
 
 /* ---- 3-day trend: the dashboard repo commits pr/po.xlsx daily, so git history IS the snapshot archive.
  * Fetch the latest commit on/before each of the last 2 Dubai days and rebuild items with the same logic. ---- */
