@@ -6,7 +6,7 @@
  *      any stage except Director/CEO/Sent-to-Supplier/Pending-Invoicing). Line manager CC'd (USER_MANAGER).
  *      Ops-confirm split "Pending Internal" vs "Pending Client" ('Unit prices updated in PR lines' = with
  *      client): client items in cards + attached Excel ONLY, not the body table. D365CRM/IT-Dep folded into
- *      it.solutions. Addresses embedded in USER_EMAIL (env PRPO_USER_EMAILS JSON overrides).
+ *      it.solutions. Addresses come from user-email-addresses.json (env PRPO_USER_EMAILS JSON overrides).
  *   2. Suppliers & Open Orders email -> Mohamed Ashraf (PRPO_PROC_MAIL_TO overrides the default):
  *      Sent-to-Supplier POs + Confirmed POs with 'Open order' status (the stale-approver ones).
  *   3. Pending Invoicing email -> Mustajab + Meha + Clita by default (PRPO_INV_MAIL_TO overrides).
@@ -21,8 +21,8 @@
  *   4. Operations All       -> PRPO_OPSALL_MAIL_TO   (Ops to Confirm + Dep Managers, all other departments)
  * A division with no recipient env set is skipped. All counts use the dashboard live-pipeline logic.
  *
- * PERSONAL email addressing: embedded USER_EMAIL map, overridden/merged by env PRPO_USER_EMAILS (JSON
- *   {"dinesh.laxman":"a@x.com", ...}, keys case-insensitive). Unmapped user in live mode -> skipped + logged.
+ * PERSONAL email addressing: repository USER_EMAIL map, overridden/merged by env PRPO_USER_EMAILS (JSON
+ *   {"dinesh.laxman":"a@x.com", ...}, keys case-insensitive). Unaddressable work is shown in procurement.
  * TEST MODE (default ON): PRPO_PERSONAL_TEST != '0' -> every personal email goes to PRPO_TEST_MAIL_TO
  *   (subject prefixed "[TEST · for <user>]"); if PRPO_TEST_MAIL_TO unset nothing personal is sent. Set
  *   PRPO_PERSONAL_TEST=0 to go live. Optional PRPO_PERSONAL_CC added to every live personal email.
@@ -42,10 +42,14 @@ const { app } = require('@azure/functions');
 const XLSX = require('xlsx');
 const ExcelJS = require('exceljs');
 const WORK_CLASS_RULE = require('../../work-class-rule.json');
+const USER_EMAIL = require('../../user-email-addresses.json');
+const INACTIVE_USERNAMES = new Set(require('../../inactive-usernames.json').inactiveUsernames.map(v=>String(v).trim().toLowerCase().replace(/\s+/g,' ')));
 
 const PR_URL = process.env.PRPO_PR_URL || 'https://strive-services-group.github.io/PR-PO-Pipeline-Dashboard/pr.xlsx';
 const PO_URL = process.env.PRPO_PO_URL || 'https://strive-services-group.github.io/PR-PO-Pipeline-Dashboard/po.xlsx';
 const DASH   = process.env.PRPO_DASH_URL || 'https://strive-services-group.github.io/PR-PO-Pipeline-Dashboard/';
+const WORKBOOK_STATE_URL = new URL('legacy-email-workbook-state.json', DASH).toString();
+const DATASET_URL = process.env.PRPO_DATASET_URL || 'https://ssg-prpo-proxy-h4cvfegaduftedhz.uaenorth-01.azurewebsites.net/api/dataset';
 const FONT = 'Aptos,Segoe UI,Arial,sans-serif', NAVY = '#14315E', RED = '#dc2626', TEAL = '#0f766e', W = 1000;
 
 const PR_MAP = {"Handyman Services_Manager":"Dep Managers","Building Services_Asst. Facility Managers 1":"Dep Managers","PurchReqReviewTask":"PR In Review","Procurement sends inquiry/RFQ to suppliers":"RFQ to suppliers","Quotation received and logged/attached":"Qt received & Logged","Quotation shared to Operations for confirmation":"Qt Shared to Op","Operations confirms material/scope":"OP confirms material","Unit prices updated in PR lines":"Unit Price Updated","Building Services_Asst. Facility Managers 2":"Dep Managers","Building Services_Facilities Manager":"Dep Managers","PAC Services_Manager":"Dep Managers","Concierge Services_Manager":"Dep Managers","Security Services_Manager":"Dep Managers","Home Services_Operations Manager":"Dep Managers","Landscaping_Manager":"Dep Managers","Finance & Accounts_Accounting Manager":"Finance","Facilities Management_Director":"Director","Commercial_Director":"Director","Executive Management_CEO":"CEO"};
@@ -235,15 +239,15 @@ function f_dept(its,L,col){
 }
 function f_noNamedOwner(its,L,col){
   const rows=its.filter(it=>it.doc==='PR'&&it.noNamedOwner); if(!rows.length)return '';
-  const groups=grpBy(rows,it=>(it.workClass||'Work class not reported')+'|'+(it.dept||'Department not reported'));
+  const groups=grpBy(rows,it=>(it.originalOwner||it.owner||'Owner not recorded')+'|'+(it.deliveryIssue||'owner not recorded in F&O')+'|'+(it.workClass||'Work class not reported')+'|'+(it.dept||'Department not reported'));
   const body=Object.entries(groups).map(([key,list])=>{
-    const split=key.lastIndexOf('|'), cls=key.slice(0,split), dept=key.slice(split+1);
+    const [owner,reason,cls,dept]=key.split('|');
     const oldest=Math.max(...list.map(it=>Number(it.age)||0));
     const value=list.reduce((sum,it)=>sum+it.value,0);
-    return [esc(cls),esc(dept),String(list.length),agec(oldest),'AED '+money(value)];
-  }).sort((a,b2)=>Number(b2[2])-Number(a[2]));
-  return finding(L,col,'No named owner',rows.length+' requisitions',b(rows.length)+' requisitions have no named person to receive an action email. They remain visible here until ownership is recorded.',
-    otable([['Class of work',300,'l'],['Department',190,'l'],['Items',54,'c'],['Oldest',58,'c'],['Value',120,'r']],body));
+    return [esc(owner),esc(reason),esc(cls),esc(dept),String(list.length),agec(oldest),'AED '+money(value)];
+  }).sort((a,b2)=>Number(b2[4])-Number(a[4]));
+  return finding(L,col,'No named owner',rows.length+' requisitions',b(rows.length)+' requisitions have no active owner or no usable email address. They remain visible here and are not emailed as personal queues.',
+    otable([['Recorded holder',150,'l'],['Reason',150,'l'],['Class of work',220,'l'],['Department',155,'l'],['Items',54,'c'],['Oldest',58,'c'],['Value',110,'r']],body));
 }
 
 /* ---- divisions ---- */
@@ -275,7 +279,7 @@ async function buildXlsxBase64(fil, cfg){
     {header:'Ref',key:'ref',width:16},{header:'Doc',key:'doc',width:7},{header:'Quote Ref',key:'qref',width:12},{header:'Stage / Bucket',key:'stage',width:22},
     {header:'Stage reason code',key:'classcode',width:32},{header:'Class of work',key:'workclass',width:58},{header:'What to do',key:'workaction',width:48},
     {header:'Pending Internal / Client',key:'pendingside',width:25},{header:'Step name',key:'step',width:34},{header:'Status',key:'status',width:22},{header:'Department',key:'dept',width:26},
-    {header:'Location',key:'loc',width:22},{header:'Pending With',key:'pend',width:20},{header:'Vendor',key:'vendor',width:30},
+    {header:'Location',key:'loc',width:22},{header:'Pending With',key:'pend',width:20},{header:'Delivery issue',key:'deliveryissue',width:28},{header:'Vendor',key:'vendor',width:30},
     {header:'Value (AED excl. VAT)',key:'value',width:19},{header:'Age (days)',key:'age',width:11},{header:'Age band',key:'ageband',width:13},{header:'Created',key:'created',width:13},
     {header:'Step date',key:'stepd',width:13},{header:'Clock source',key:'clocksrc',width:24},{header:'Title / Name',key:'title',width:34},{header:'Preparer / Linked PR',key:'prep',width:20}
   ];
@@ -284,7 +288,7 @@ async function buildXlsxBase64(fil, cfg){
     else { status=(String(r['Approval status']||'')+' / '+String(r['Purchase order status']||'')).replace(/^ \/ | \/ $/g,''); loc=r['Location']; ven=r['Vendor name']; created=ymdStr(r['Created date and time']); stepd=ymdStr(r['Step date and time']); title=''; prep=r['Purchase requisition']; }
     const pend=it.owner;  // computed owner: ops-user for ops-confirm, Created-by for Draft POs, approver otherwise
     const qref=(it.doc!=='PO'? String(r['Quotation reference']||'') : '');
-    ws.addRow({ref:it.ref,doc:it.typ,qref,stage:it.stage,classcode:it.workClassCode,workclass:it.workClass,workaction:it.workAction,pendingside:it.pendingSide||pendingSide(it),step:r['Step name'],status,dept:it.dept,loc,pend,vendor:ven,value:Math.round((it.value||0)*100)/100,age:(it.age==null?null:it.age),ageband:it.ageBand,created,stepd,clocksrc:it.doc==='PO'?(r['Clock label']||'since'):'',title,prep}); });
+    ws.addRow({ref:it.ref,doc:it.typ,qref,stage:it.stage,classcode:it.workClassCode,workclass:it.workClass,workaction:it.workAction,pendingside:it.pendingSide||pendingSide(it),step:r['Step name'],status,dept:it.dept,loc,pend,deliveryissue:it.deliveryIssue||'',vendor:ven,value:Math.round((it.value||0)*100)/100,age:(it.age==null?null:it.age),ageband:it.ageBand,created,stepd,clocksrc:it.doc==='PO'?(r['Clock label']||'since'):'',title,prep}); });
   const DIVCOL={procurement:'FF1D4ED8',finance:'FF16A34A',ops_hm:'FF0F766E',ops_all:'FF7C3AED'};
   const HEAD=DIVCOL[cfg&&cfg.key]||'FF14315E';
   const h=ws.getRow(1); h.height=26;
@@ -340,7 +344,9 @@ function buildDivision(cfg, items, hist){
   const trendBlock='<table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:separate;"><tr><td width="300" valign="top" style="width:300px;">'
     +tcard('Open items &#8212; 3 days',trendCols(hist,s=>filterDiv(s,cfg).length,tot),cfg.accent||'#3b82f6','AED '+money(totv))
     +'</td></tr></table><div style="height:12px;font-size:12px;line-height:12px;">&#160;</div>';
+  const warning=(fil[0]&&fil[0].freshnessWarning)||items.freshnessWarning||'';
   const inner='<div style="width:'+W+'px;font-family:'+FONT+';color:#22303c;">'
+    +freshnessBanner(warning)
     +'<div style="font:400 12px '+HF+';color:#607083;margin:0 0 10px;">This queue: '+b(tot)+' open items &#183; '+b('AED '+money(totv))+' &#183; live-pipeline logic, reconciles to the dashboard.</div>'
     +trendBlock+cards+att
     +'<div style="font-family:'+FONT+';font-weight:800;font-size:15px;color:'+NAVY+';margin:16px 0 2px;">&#128269; Analysis &#8212; who to chase today</div>'
@@ -368,27 +374,7 @@ function buildDivision(cfg, items, hist){
 /* ---- PERSONAL action emails: one per pending ops / finance member ----
  * Pool = genuinely-pending items in the finance / ops divisions, EXCLUDING Director+CEO stages (leadership
  * stays in the Finance division email) and vendor stages. Procurement division untouched. */
-// CK-supplied mapping (2026-08-11 role table). Env PRPO_USER_EMAILS (JSON) merges over this.
-const USER_EMAIL={
-  "dinesh.laxman":"dinesh.laxman@sahalahfm.com",            // BS Approver
-  "Mohammad.w":"mohammad.w@sahalahfm.com",                  // BS Manager
-  "arman.b":"Arman.b@striveservicesgroup.com",              // Finance Approver
-  "Ayman.ismail":"ayman.ismail@striveservicesgroup.com",    // Finance Manager
-  "muhammad.mustajab":"muhammad.mustajab@striveservicesgroup.com", // Finance Pending Invoicing
-  "Shakir Ameer Bakhsh":"fitout.dc@candoo.ae",              // Fit-out Approver
-  "shijil.c":"shijil.c@candoo.ae",                          // Home Maintenance Approver
-  "it.solutions":"it.solutions@striveservicesgroup.com",    // IT approver (D365CRM / IT Dep folded in)
-  "Gokul.Krishna":"gokul.krishna@sahalahfm.com",            // PAC Approver
-  "Judhin.prabhakar":"judhin.prabhakar@sahalahfm.com",      // PAC Manager
-  "Mohamed.Ashraf":"mohamed.ashraf@striveservicesgroup.com",// Procurement Manager
-  "roderick.red":"roderick.red@striveservicesgroup.com",    // Procurement Staff
-  "Adnan.Ullah":"adnan.ullah@striveservicesgroup.com",      // Procurement Staff
-  "Aparna.Pauly":"procurement.asst@striveservicesgroup.com",// Procurement Staff
-  "pramod.c":"pramod.c@sahalahfm.com",                      // Security approver
-  "Abdul.Muqeet":"abdul.muqeet@sahalahfm.com",              // Security Manager
-  "teena.k":"Teena.k@sahalahfm.com",                        // Concierge Manager
-  "Riyaz.n":"riyaz.n@striveservicesgroup.com"               // Procurement Staff
-};
+// CK-supplied mapping (2026-08-11 role table), mirrored to the workbook generator.
 // Line manager (CC on the personal email) per CK's role table. Keyed by F&O username.
 const USER_MANAGER={
   "dinesh.laxman":"mohammad.w@sahalahfm.com",
@@ -413,10 +399,23 @@ const USER_MANAGER={
 const _MGR={}; for(const k in USER_MANAGER) _MGR[_norm(k)]=USER_MANAGER[k];
 function managerFor(key){ return _MGR[key]||''; }
 function userEmailMap(){ const m={}; for(const k in USER_EMAIL) m[_norm(k)]=USER_EMAIL[k]; try{ const j=JSON.parse(process.env.PRPO_USER_EMAILS||'{}'); for(const k in j) m[_norm(k)]=String(j[k]||'').trim(); }catch(e){} return m; }
-function personalPool(items){ return items.filter(it=>it.ppend!==false && !it.noNamedOwner && it.stage!=='Director'&&it.stage!=='CEO'&&it.stage!=='Sent to Supplier'&&it.stage!=='Pending Invoicing' && String(it.owner==null?'':it.owner).trim()!=='' && it.owner!=='(unassigned)'); }
+function personalPool(items){ return items.filter(it=>it.ppend!==false && !it.noNamedOwner && !it.deliveryIssue && it.stage!=='Director'&&it.stage!=='CEO'&&it.stage!=='Sent to Supplier'&&it.stage!=='Pending Invoicing' && String(it.owner==null?'':it.owner).trim()!=='' && it.owner!=='(unassigned)'); }
 // Same human appears under both full-name and username F&O accounts — fold them into one personal email.
 const USER_ALIAS={'dinesh laxman laxman':'dinesh.laxman','gokul krishna pillai':'Gokul.Krishna','pramod chandrasenan chandrasenan':'pramod.c','shijil choyaprath chandran':'shijil.c','zaheer ahmed ameer':'Zaheer.Ahmed','d365crm admin':'it.solutions','d365crmadmin':'it.solutions','it department':'it.solutions'};
 function canonOwner(u){ return USER_ALIAS[_norm(u)]||u; }
+function applyDeliveryPolicy(items, addresses=userEmailMap()){
+  for(const it of items){
+    if(it.doc!=='PR')continue;
+    const original=String(it.owner==null?'':it.owner).trim();
+    const canonical=canonOwner(original), key=_norm(canonical);
+    let issue='';
+    if(it.noNamedOwner) issue='owner not recorded in F&O';
+    else if(INACTIVE_USERNAMES.has(key)) issue='no active owner';
+    else if(!addresses[key]) issue='no email address on file';
+    if(issue){ it.originalOwner=original||'Owner not recorded'; it.deliveryIssue=issue; it.noNamedOwner=true; it.div='procurement'; }
+  }
+  return items;
+}
 function groupByOwner(pool){ const g={}; for(const it of pool){ const cu=canonOwner(it.owner); const k=_norm(cu); const e=g[k]||(g[k]={key:k,items:[],disp:{}}); e.items.push(it); e.disp[cu]=(e.disp[cu]||0)+1; } return Object.values(g).map(e=>({key:e.key,user:Object.entries(e.disp).sort((a,b2)=>b2[1]-a[1])[0][0],items:e.items})).sort((a,b2)=>b2.items.length-a.items.length); }
 function firstName(u){ const t=String(u==null?'':u).trim().split(/[.\s]+/)[0]||''; return t? t.charAt(0).toUpperCase()+t.slice(1) : 'there'; }
 const PW=1000;
@@ -478,7 +477,9 @@ function buildPersonal(p,hist){
   const poHtml=poItems.length?'<div style="border-left:4px solid #0891b2;padding-left:12px;margin:18px 0 8px;"><div style="font-family:'+FONT+';font-size:15px;font-weight:800;color:'+NAVY+';">Purchase order action &#183; '+poItems.length+'</div></div><div class="detail-scroll">'+otable([['PO #',95,'l'],['Vendor',190,'l'],['Department',145,'l'],['Step',170,'l'],['Value',105,'r'],['Age',50,'c'],['Band',70,'c']],poItems.map(it=>['<span style="font-weight:700;color:'+NAVY+';">'+esc(it.ref)+'</span>',esc(it.vendor||'-'),esc(it.dept||'-'),esc(String(it.raw['Step name']||'-')+clockNote(it.raw)),'AED '+money(it.value),agec(it.age),esc(it.ageBand)]))+'</div>':'';
   const clientN=xfil.filter(it=>it.pendingSide==='Pending Client').length;
   const att='<div style="border:1px solid #cbd9ec;background:#f2f7ff;padding:10px 13px;margin:0 0 2px;border-radius:8px;font:400 12px '+HF+';color:#334867;">&#8505;&#65039; <b style="color:'+HNAVY+';">Data source of truth:</b> live F&amp;O PR / PO data (Dynamics 365 Finance &amp; Operations) &#183; refreshed daily.</div>';
+  const warning=(fil[0]&&fil[0].freshnessWarning)||'';
   const inner='<div class="mail-inner" style="width:'+PW+'px;font-family:'+FONT+';color:#22303c;">'
+    +freshnessBanner(warning)
     +'<div style="font:400 13px '+HF+';color:#334155;margin:0 0 8px;">Hi <b style="color:'+HNAVY+';">'+esc(firstName(p.user))+'</b> &#8212; you have '+b(n)+' open PR / PO item'+(n===1?'':'s')+' pending your action, totalling '+b('AED '+money(totv))+'.'+(oldAge>0?' The oldest has been waiting '+b(oldAge+' days')+'.':'')+'</div>'
     +cardsHtml+stageCards+att
     +'<div style="font-family:'+FONT+';font-weight:800;font-size:15px;color:'+NAVY+';margin:16px 0 2px;">&#128203; Your pending items</div>'
@@ -509,7 +510,7 @@ async function sendPersonal(out, context){
   const real=userEmailMap()[out.key]||'';
   let to, subject=out.subject;
   if(test){ const t=(process.env.PRPO_TEST_MAIL_TO||'').trim(); if(!t){ if(context) context.log('personal skip '+out.user+': test mode, PRPO_TEST_MAIL_TO not set'); return {user:out.user,sent:false,reason:'test mode: PRPO_TEST_MAIL_TO not set'}; } to=[t]; subject='[TEST · for '+out.user+(real?'':' · NO ADDRESS MAPPED')+'] '+subject; }
-  else { if(!real){ if(context) context.log('personal skip '+out.user+': no address mapped'); return {user:out.user,sent:false,reason:'no address mapped'}; } to=[real]; }
+  else { if(!real) throw new Error('personal delivery policy failure: no address for '+out.user); to=[real]; }
   const msg={subject, body:{contentType:'HTML',content:out.html}, toRecipients:to.map(a=>({emailAddress:{address:a}})),
     attachments:[{'@odata.type':'#microsoft.graph.fileAttachment',name:out.xlsx,contentType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',contentBytes:await buildXlsxBase64(out.fil,{key:'personal'})}]};
   if(!test){ const cc=String(managerFor(out.key)||'').split(/[;,]/).concat((process.env.PRPO_PERSONAL_CC||'').split(/[;,]/)).map(s=>String(s||'').trim()).filter(Boolean).filter(a=>a.toLowerCase()!==String(to[0]).toLowerCase()); if(cc.length) msg.ccRecipients=cc.map(a=>({emailAddress:{address:a}})); }
@@ -549,11 +550,30 @@ async function sendDivision(out, context){
 }
 
 async function fetchXlsx(url){ const r=await fetch(url+(url.includes('?')?'&':'?')+'t='+Date.now()); if(!r.ok) throw new Error('fetch '+r.status+' '+url); return parseXlsx(Buffer.from(await r.arrayBuffer())); }
+async function fetchJson(url){ const r=await fetch(url+(url.includes('?')?'&':'?')+'t='+Date.now(),{headers:{Accept:'application/json'}}); if(!r.ok) throw new Error('fetch '+r.status+' '+url); return r.json(); }
+async function safeFetchJson(url){ try{return await fetchJson(url);}catch(e){return {}; } }
+function dubaiPreparedAt(value){
+  const d=new Date(value); if(isNaN(d))return '';
+  const parts=new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Dubai',hour:'2-digit',minute:'2-digit',hour12:false,day:'numeric',month:'long'}).formatToParts(d);
+  const get=t=>(parts.find(p=>p.type===t)||{}).value||'';
+  return get('hour')+':'+get('minute')+' on '+get('day')+' '+get('month');
+}
+function freshnessWarning(workbookGeneratedAt, liveGeneratedAt){
+  const workbook=new Date(workbookGeneratedAt), live=new Date(liveGeneratedAt);
+  if(isNaN(workbook)||isNaN(live))return 'The workbook freshness could not be confirmed against the live feed.';
+  if(live.getTime()-workbook.getTime()<=6*3600000)return '';
+  return 'These figures were prepared at '+dubaiPreparedAt(workbookGeneratedAt)+' and may not include work raised since.';
+}
+function freshnessBanner(message){ return message?'<div style="border:1px solid #f59e0b;background:#fff7ed;color:#9a3412;padding:10px 13px;margin:0 0 12px;border-radius:8px;font:700 12px '+HF+';">'+esc(message)+'</div>':''; }
 async function loadItems(){
-  const [prRows,poRows]=await Promise.all([fetchXlsx(PR_URL),fetchXlsx(PO_URL)]);
-  const items=buildItems(prRows,poRows);
-  items.datasetRevision='temporary-workbook-routing-fallback';
-  items.datasetGeneratedAt=null;
+  const [prRows,poRows,state,live]=await Promise.all([fetchXlsx(PR_URL),fetchXlsx(PO_URL),safeFetchJson(WORKBOOK_STATE_URL),safeFetchJson(DATASET_URL)]);
+  const items=applyDeliveryPolicy(buildItems(prRows,poRows));
+  const warning=freshnessWarning(state.datasetGeneratedAt,live.generatedAt);
+  for(const item of items)item.freshnessWarning=warning;
+  items.freshnessWarning=warning;
+  items.datasetRevision=state.datasetRevision||'temporary-workbook-routing-fallback';
+  items.datasetGeneratedAt=state.datasetGeneratedAt||null;
+  items.liveDatasetGeneratedAt=live.generatedAt||null;
   items.sourceState='WORKBOOK_FALLBACK';
   return items;
 }
@@ -631,4 +651,4 @@ app.http('prpo-email', { methods:['GET','OPTIONS'], authLevel:'function', route:
   }catch(e){ context.error('prpo-email failed:',e); return {status:500,jsonBody:{error:e.message}}; }
 }});
 
-module.exports = { buildItems, buildDivision, buildXlsxBase64, parseXlsx, DIVS, personalPool, groupByOwner, buildPersonal, userEmailMap, historyItems, loadItems };
+module.exports = { buildItems, buildDivision, buildXlsxBase64, parseXlsx, DIVS, personalPool, groupByOwner, buildPersonal, userEmailMap, historyItems, loadItems, applyDeliveryPolicy, freshnessWarning };

@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const XLSX = require('xlsx');
 const workRule = require('../work-class-rule.json');
-const { buildItems, buildDivision, buildXlsxBase64, groupByOwner, personalPool, buildPersonal, DIVS, parseXlsx } = require('../src/functions/prpoEmail');
+const { buildItems, buildDivision, buildXlsxBase64, groupByOwner, personalPool, buildPersonal, DIVS, parseXlsx, applyDeliveryPolicy, freshnessWarning, userEmailMap } = require('../src/functions/prpoEmail');
 
 function pr(status, number) {
   return {
@@ -114,7 +114,7 @@ test('email attachment exposes class code, class, action and age band', async ()
   const rows = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]], { defval: null });
   assert.equal(rows[0]['Stage reason code'], 'ACTIVE_LINES_PRICED');
   assert.equal(rows[0]['Class of work'], workRule.classes.ACTIVE_LINES_PRICED.label);
-  assert.equal(rows[0]['Age band'], '0–7');
+  assert.equal(rows[0]['Age band'], item.ageBand);
 });
 
 test('parseXlsx accepts an added named column without a whitelist', () => {
@@ -124,4 +124,47 @@ test('parseXlsx accepts an added named column without a whitelist', () => {
   const parsed = parseXlsx(XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' }));
   assert.equal(parsed.length, 1);
   assert.equal(parsed[0]['Stage reason code'], 'ACTIVE_LINES_PRICED');
+});
+
+test('inactive, unaddressed and addressed holders have one delivery route', () => {
+  const rows = [
+    { ...pr('In review', 'PR-INACTIVE'), 'Pending Approver/User': 'Layusha.cleatus', 'Department': 'Procurement', 'Stage reason code': 'ACTIVE_LINES_NOT_FULLY_PRICED' },
+    { ...pr('In review', 'PR-NO-EMAIL'), 'Pending Approver/User': 'Sirinikhil', 'Department': 'Housekeeping Services', 'Stage reason code': 'UNMAPPED_ELEMENT' },
+    { ...pr('In review', 'PR-ZAHEER'), 'Pending Approver/User': 'Zaheer Ahmed Ameer', 'Department': 'Accomodation Services', 'Stage reason code': 'UNMAPPED_ELEMENT' }
+  ];
+  const items = applyDeliveryPolicy(buildItems(rows, []));
+  assert.equal(items[0].deliveryIssue, 'no active owner');
+  assert.equal(items[0].noNamedOwner, true);
+  assert.equal(items[1].deliveryIssue, 'no email address on file');
+  assert.equal(items[1].noNamedOwner, true);
+  assert.equal(items[2].deliveryIssue, undefined);
+  assert.equal(userEmailMap()['zaheer.ahmed'], 'Zaheer.Ahmed@domus-housing.com');
+  assert.deepEqual(groupByOwner(personalPool(items)).map(p=>p.user), ['Zaheer.Ahmed']);
+  const procurement = buildDivision(DIVS.find(d=>d.key==='procurement'), items, {});
+  assert.match(procurement.html, /Layusha\.cleatus/);
+  assert.match(procurement.html, /no active owner/);
+  assert.match(procurement.html, /Sirinikhil/);
+  assert.match(procurement.html, /no email address on file/);
+  assert.doesNotMatch(procurement.html, /PR-ZAHEER/);
+  assert.equal(personalPool(items).length + items.filter(it=>it.doc==='PR'&&it.noNamedOwner).length, 3);
+});
+
+test('stale warning appears after six hours and stays absent when fresh', () => {
+  const fresh = freshnessWarning('2026-09-09T04:00:00Z', '2026-09-09T09:59:59Z');
+  const stale = freshnessWarning('2026-09-08T16:06:00Z', '2026-09-09T04:30:00Z');
+  assert.equal(fresh, '');
+  assert.equal(stale, 'These figures were prepared at 20:06 on 8 September and may not include work raised since.');
+
+  const personalItems = applyDeliveryPolicy(buildItems([pr('In review', 'PR-STALE')], []));
+  personalItems[0].freshnessWarning = stale;
+  const personal = buildPersonal(groupByOwner(personalPool(personalItems))[0], {});
+  assert.match(personal.html, /These figures were prepared at 20:06 on 8 September/);
+
+  const noOwner = pr('In review', 'PR-STALE-DIVISION');
+  noOwner['Pending Approver/User'] = 'Sirinikhil';
+  noOwner['Stage reason code'] = 'UNMAPPED_ELEMENT';
+  const divisionItems = applyDeliveryPolicy(buildItems([noOwner], []));
+  divisionItems[0].freshnessWarning = fresh;
+  const division = buildDivision(DIVS.find(d=>d.key==='procurement'), divisionItems, {});
+  assert.doesNotMatch(division.html, /may not include work raised since/);
 });
