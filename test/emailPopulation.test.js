@@ -114,7 +114,8 @@ test('email attachment exposes class code, class, action and age band', async ()
   const rows = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]], { defval: null });
   assert.equal(rows[0]['Stage reason code'], 'ACTIVE_LINES_PRICED');
   assert.equal(rows[0]['Class of work'], workRule.classes.ACTIVE_LINES_PRICED.label);
-  assert.equal(rows[0]['Age band'], item.ageBand);
+  assert.equal(rows[0]['Age band'], `Raised · ${item.ageBand}`);
+  assert.equal(rows[0]['Age basis'], 'Raised date');
 });
 
 test('parseXlsx accepts an added named column without a whitelist', () => {
@@ -124,6 +125,52 @@ test('parseXlsx accepts an added named column without a whitelist', () => {
   const parsed = parseXlsx(XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' }));
   assert.equal(parsed.length, 1);
   assert.equal(parsed[0]['Stage reason code'], 'ACTIVE_LINES_PRICED');
+});
+
+test('all-unpriced and partly-priced queues never imply one total covers every item', () => {
+  const unpriced = { ...pr('In review', 'PR-UNPRICED'), 'Stage reason code': 'ACTIVE_LINES_NOT_FULLY_PRICED', 'Total amount': 0, 'Pending Approver/User': 'Adnan.Ullah' };
+  const allUnpriced = buildPersonal(groupByOwner(personalPool(buildItems([unpriced], [])))[0], {});
+  assert.match(allUnpriced.html, /1 still being priced/);
+  assert.match(allUnpriced.html, /not yet priced/i);
+  assert.doesNotMatch(allUnpriced.html, /totalling/i);
+
+  const priced = { ...pr('In review', 'PR-PRICED'), 'Stage reason code': 'UNMAPPED_ELEMENT', 'Total amount': 250, 'Pending Approver/User': 'Adnan.Ullah' };
+  const partial = buildPersonal(groupByOwner(personalPool(buildItems([unpriced, priced], [])))[0], {});
+  assert.equal(partial.pricingQueueCount, 1);
+  assert.equal(partial.pricedCount, 1);
+  assert.equal(partial.value, 250);
+  assert.match(partial.html, /2 items/);
+  assert.match(partial.html, /1 still being priced/);
+  assert.match(partial.html, /1 priced/);
+  assert.match(partial.html, /AED 250 excl\. VAT/);
+});
+
+test('PR age wording distinguishes raised date from a distinct step date', () => {
+  const same = { ...pr('In review', 'PR-SAME-CLOCK'), 'Created date': '2026-09-01T00:00:00Z', 'Step date and time': '2026-09-01T00:00:00Z' };
+  const distinct = { ...pr('In review', 'PR-DISTINCT-CLOCK'), 'Created date': '2026-08-01T00:00:00Z', 'Step date and time': '2026-09-05T00:00:00Z' };
+  const [sameItem, distinctItem] = buildItems([same, distinct], []);
+  assert.equal(sameItem.clockBasis, 'raised');
+  assert.match(sameItem.clockLabel, /^raised \d+ days ago$/);
+  assert.equal(distinctItem.clockBasis, 'current step');
+  assert.match(distinctItem.clockLabel, /^with you since 2026-09-05 \(\d+ days\)$/);
+});
+
+test('shared item names other active buyers and excludes an inactive username', () => {
+  const row = { ...pr('In review', 'PR-SHARED-ACTIVE'), 'Stage reason code': 'ACTIVE_LINES_NOT_FULLY_PRICED', 'Pending Approver/User': 'Adnan.Ullah' };
+  const rows = [row];
+  Object.defineProperty(rows, 'routingMetadata', { value: [
+    { 'Purchase requisition': 'PR-SHARED-ACTIVE', 'Source holder': 'Adnan.Ullah' },
+    { 'Purchase requisition': 'PR-SHARED-ACTIVE', 'Source holder': 'Layusha.cleatus' },
+    { 'Purchase requisition': 'PR-SHARED-ACTIVE', 'Source holder': 'roderick.red' }
+  ] });
+  const item = buildItems(rows, [])[0];
+  assert.equal(item.sourceShared, true);
+  assert.deepEqual(item.otherLiveBuyers, ['roderick.red']);
+  assert.doesNotMatch(item.sharedLabel, /Layusha/i);
+  const out = buildPersonal(groupByOwner(personalPool([item]))[0], {});
+  assert.equal(out.sourceSharedCount, 1);
+  assert.equal(out.sharedWithOtherActiveBuyers, 1);
+  assert.match(out.html, /Shared with roderick\.red/);
 });
 
 test('inactive, unaddressed and addressed holders have one delivery route', () => {

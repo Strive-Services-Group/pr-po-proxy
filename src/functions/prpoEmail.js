@@ -62,14 +62,32 @@ const TYCOL = {'PR':'#2563eb','CPR':'#7c3aed','PO':'#0891b2'};
 function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 function money(v){ const n=Number(v); return (isFinite(n)?n:0).toLocaleString('en-US',{maximumFractionDigits:0})+' excl. VAT'; }
 function amt(r){ const v=Number(r['Total amount']); return isFinite(v)?v:0; }
+function hasRecordedValue(r){ const raw=r&&r['Total amount']; return raw!==null&&raw!==''&&raw!==undefined&&Number.isFinite(Number(raw))&&Number(raw)>0; }
 function xd(v){ if(v instanceof Date) return isNaN(v)?null:v; if(typeof v==='number'&&isFinite(v)){ const o=XLSX.SSF.parse_date_code(v); if(!o||!o.y) return null; return new Date(Date.UTC(o.y,o.m-1,o.d,o.H||0,o.M||0,Math.floor(o.S||0))); } if(typeof v==='string'&&v){ const d=new Date(v); return isNaN(d)?null:d; } return null; }
 function ageDays(v){ const d=xd(v); return d? Math.max(0,Math.floor((Date.now()-d.getTime())/86400000)) : null; }
 function ymdStr(v){ const d=xd(v); if(!d) return ''; const p=n=>String(n).padStart(2,'0'); return d.getUTCFullYear()+'-'+p(d.getUTCMonth()+1)+'-'+p(d.getUTCDate()); }
 function avg(l){ return l.length? l.reduce((a,b)=>a+b,0)/l.length : 0; }
-function parseXlsx(buf){ const wb=XLSX.read(buf,{type:'buffer'}); const ws=wb.Sheets[wb.SheetNames[0]]; const aoa=XLSX.utils.sheet_to_json(ws,{header:1,defval:null,raw:true}); if(!aoa.length) return []; const hdr=aoa[0].map(x=>String(x)); const rows=[]; for(let i=1;i<aoa.length;i++){ const o={}; for(let j=0;j<hdr.length;j++) o[hdr[j]]=aoa[i][j]; rows.push(o);} return rows; }
+function parseXlsx(buf){
+  const wb=XLSX.read(buf,{type:'buffer'}), ws=wb.Sheets[wb.SheetNames[0]];
+  const aoa=XLSX.utils.sheet_to_json(ws,{header:1,defval:null,raw:true});
+  if(!aoa.length)return [];
+  const hdr=aoa[0].map(x=>String(x)), rows=[];
+  for(let i=1;i<aoa.length;i++){ const o={}; for(let j=0;j<hdr.length;j++)o[hdr[j]]=aoa[i][j]; rows.push(o); }
+  const metaSheet=wb.Sheets['Routing metadata'];
+  const metadata=metaSheet?XLSX.utils.sheet_to_json(metaSheet,{defval:null,raw:true}):[];
+  Object.defineProperty(rows,'routingMetadata',{value:metadata,enumerable:false});
+  return rows;
+}
 function prLive(r){ const st=_norm(r['Status']); return ['draft','in review','approved'].includes(st) && (!!String(r['Stage reason code']||'').trim() || !!PR_MAP[r['Step name']]); }
 function poBucket(r){ const live=String(r['Live stage']||r['Step name']||''); const appr=String(r['Approval status']||''); const pos=String(r['Purchase order status']||''); let b=PO_MAP[r['Step name']]||null; if(['Procurement','Finance','Director','CEO'].includes(live)) b=live; if(live==='Approval — unmapped element'||live==='Not yet sent') b='Procurement'; if(live==='Sent to supplier') b='Sent to Supplier'; if(live==='Receipt posted') b='Pending Invoicing'; if(live==='Invoiced') return null; if(appr==='Rejected'||pos==='Canceled'||pos==='Cancelled'||pos==='Closed'||pos==='Invoiced'||!b) return null; return b; }
-function prAge(r){ const sd=r['Step date and time']; return ageDays(sd!=null? sd : r['Created date']); }
+function sameMoment(a,b){ const da=xd(a),db=xd(b); return !!(da&&db&&Math.abs(da.getTime()-db.getTime())<1000); }
+function prClock(r){
+  const created=r['Created date'], step=r['Step date and time'];
+  if(!step||sameMoment(step,created)){ const age=ageDays(created); return {age,basis:'raised',label:age==null?'raised date not recorded':'raised '+age+' days ago'}; }
+  const age=ageDays(step), date=ymdStr(step);
+  return {age,basis:'current step',label:age==null?'current-step date not recorded':'with you since '+date+' ('+age+' days)'};
+}
+function prAge(r){ return prClock(r).age; }
 function poAge(r){ const sd=r['Step date and time']; return ageDays(sd!=null? sd : (r['Created date and time']!=null? r['Created date and time'] : r['Requested receipt date'])); }
 function clockNote(r){ const p=String(r&&r['Clock provenance']||''); if(p==='SEEDED_FROM_FINAL_WORKBOOK') return ' — since (from last export)'; if(p==='NOT_RECORDED') return ' — since — not recorded'; return ''; }
 
@@ -93,6 +111,7 @@ function prPendingWith(r){ const st=String(r['Status']||''); if(st==='Draft') re
 const NO_NAMED_OWNER='No named owner';
 function isNoNamedOwner(value){ const v=_norm(value); return !v||v==='(unassigned)'||v==='not recorded'||v.startsWith('no named owner')||v.startsWith('employee number '); }
 function ageBand(days){ if(days==null)return 'Age not recorded'; if(days<=7)return '0–7'; if(days<=30)return '8–30'; if(days<=60)return '31–60'; if(days<=90)return '61–90'; return 'Over 90'; }
+function ageBandLabel(it){ return (it.clockBasis==='raised'?'Raised':'Current step')+' · '+it.ageBand; }
 function legacyClassCode(step){
   if(step==='Unit prices updated in PR lines'||step==='Quotation shared to Operations for confirmation')return 'ACTIVE_LINES_PRICED';
   if(['Procurement sends inquiry/RFQ to suppliers','Quotation received and logged/attached','Operations confirms material/scope'].includes(step))return 'ACTIVE_LINES_NOT_FULLY_PRICED';
@@ -104,6 +123,26 @@ function workClassFor(r){
   const rule=WORK_CLASS_RULE.classes[code];
   if(rule)return {code,label:rule.label,action:rule.action,order:rule.order,rule,fromWorkbook:!!supplied};
   return {code,label:code==='NOT_REPORTED'?'Work class not reported by workbook':WORK_CLASS_RULE.unknownLabel+' — '+code,action:WORK_CLASS_RULE.unknownAction,order:999,rule:{headerBucket:'Step not reported by F&O'},fromWorkbook:!!supplied};
+}
+function routingMetadataMap(rows){
+  const out=new Map();
+  for(const row of (rows&&rows.routingMetadata)||[]){
+    const ref=String(row['Purchase requisition']||'').trim().toUpperCase(), holder=String(row['Source holder']||'').trim();
+    if(!ref||!holder)continue;
+    const list=out.get(ref)||[], key=_norm(canonOwner(holder));
+    if(!list.some(name=>_norm(canonOwner(name))===key))list.push(holder);
+    out.set(ref,list);
+  }
+  return out;
+}
+function sharedBuyerState(ref,owner,workCode,metadata){
+  if(workCode!=='ACTIVE_LINES_NOT_FULLY_PRICED')return {sourceShared:false,otherLiveBuyers:[],label:''};
+  const source=(metadata.get(String(ref||'').trim().toUpperCase())||[]).map(canonOwner);
+  const unique=[]; for(const name of source){const key=_norm(name);if(!unique.some(v=>_norm(v)===key))unique.push(name);}
+  if(unique.length<2)return {sourceShared:false,otherLiveBuyers:[],label:''};
+  const current=_norm(canonOwner(owner));
+  const others=unique.filter(name=>!INACTIVE_USERNAMES.has(_norm(name))&&_norm(name)!==current);
+  return {sourceShared:true,otherLiveBuyers:others,label:others.length?'Shared with '+others.join(' · '):'Shared source assignment · no other active buyer'};
 }
 function pendingSide(it){
   if(it.doc!=='PR'||it.stage!=='Operations to Confirm')return '';
@@ -130,7 +169,7 @@ function _unused_itemDivision(it){
 const STAGE_ORDER=[['PR','Re-Assigned/Rejected'],['PR','Procurement'],['PR','Operations to Confirm'],['PR','Step not reported by F&O'],['PR','Dep Managers'],['PR','Finance'],['PR','Director'],['PR','CEO'],['PO','Procurement'],['PO','Finance'],['PO','Director'],['PO','CEO'],['PO','Confirmed Open Order'],['PO','Sent to Supplier'],['PO','Pending Invoicing']];
 
 function buildItems(prRows, poRows){
-  const items=[];
+  const items=[], sharedMeta=routingMetadataMap(prRows);
   for(const r of prRows){ if(!prLive(r)) continue; const work=workClassFor(r); const hb=work.rule.headerBucket||'Step not reported by F&O'; const rowdept=String(r['Department']||'').trim(); const pw0=prPendingWith(r); const inrev=(String(r['Status']||'').trim()==='In review');
     // New workbooks already carry the shared holder decision in the three compatibility
     // columns. Keep the legacy operations lookup only while an older workbook is in flight.
@@ -148,8 +187,8 @@ function buildItems(prRows, poRows){
     else if(rl==='Finance'||rl==='Director'||rl==='CEO'){ stage=rl; div='finance'; }
     else if(rl==='Procurement'){ div='procurement'; stage=(hb==='Operations to Confirm'&&inrev)?'Re-Assigned/Rejected':'Procurement'; }
     else { div=opsDivFor(rowdept); stage=(hb==='Procurement'&&inrev)?'Re-Assigned/Rejected':(hb==='Operations to Confirm')?'Operations to Confirm':'Dep Managers'; }
-    const age=prAge(r);
-    items.push({ref:r['Purchase requisition'],doc:'PR',typ:String(r['Purchase requisition']||'').startsWith('CPR')?'CPR':'PR',stage:stage,div:div,age,ageBand:ageBand(age),owner:owner,dept:rowdept,value:amt(r),vendor:'',ppend:true,noNamedOwner,workClassCode:work.code,workClass:work.label,workAction:work.action,classOrder:work.order,raw:r}); }
+    const clock=prClock(r), shared=sharedBuyerState(r['Purchase requisition'],owner,work.code,sharedMeta);
+    items.push({ref:r['Purchase requisition'],doc:'PR',typ:String(r['Purchase requisition']||'').startsWith('CPR')?'CPR':'PR',stage:stage,div:div,age:clock.age,ageBand:ageBand(clock.age),clockBasis:clock.basis,clockLabel:clock.label,owner:owner,dept:rowdept,value:amt(r),hasRecordedValue:hasRecordedValue(r),vendor:'',ppend:true,noNamedOwner,workClassCode:work.code,workClass:work.label,workAction:work.action,classOrder:work.order,sourceShared:shared.sourceShared,otherLiveBuyers:shared.otherLiveBuyers,sharedLabel:shared.label,raw:r}); }
   // PO: owner + "genuinely pending a person?" flag (In review -> Pending Approver/User, Draft -> Created by; Confirmed/Approved not pending).
   // Vendor stages (Sent-to-Supplier/Pending-Invoicing) route by bucket; every other PO's bucket+division is reconstructed from the holder's role.
   for(const r of poRows){ const bk=poBucket(r); if(!bk) continue; const ven=String(r['Vendor name']||'-').trim(); const poStat=String(r['Approval status']||''); const createdBy=String(r['Created by']||r['Created By']||'').trim(); const poPend=String(r['Pending Approver/User']||'').trim(); const isVenBk=(bk==='Sent to Supplier'||bk==='Pending Invoicing'); let own,ppend; if(isVenBk){ own=ven; ppend=false; } else if(poStat==='In review'){ own=poPend||'(unassigned)'; ppend=true; } else if(poStat==='Draft'){ own=createdBy||'(unassigned)'; ppend=true; } else { own=poPend||'(unassigned)'; ppend=false; }
@@ -158,13 +197,13 @@ function buildItems(prRows, poRows){
     else if(bk==='Pending Invoicing'){ stage=bk; div='finance'; }
     else { const rl=roleOf(own); if(rl==='Finance'||rl==='Director'||rl==='CEO'){ stage=rl; div='finance'; } else if(rl==='Procurement'){ stage='Procurement'; div='procurement'; } else { stage='Procurement'; div='procurement'; } }
     const age=poAge(r);
-    items.push({ref:r['Purchase order'],doc:'PO',typ:'PO',stage:stage,div:div,age,ageBand:ageBand(age),owner:own,dept:String(r['Department']||'').trim(),value:amt(r),vendor:ven,ppend:ppend,noNamedOwner:false,workClassCode:String(r['Stage reason code']||''),workClass:'Purchase order action',workAction:'Complete the current purchase-order step.',classOrder:100,raw:r}); }
+    items.push({ref:r['Purchase order'],doc:'PO',typ:'PO',stage:stage,div:div,age,ageBand:ageBand(age),clockBasis:'current step',clockLabel:'at current step for '+age+' days',owner:own,dept:String(r['Department']||'').trim(),value:amt(r),hasRecordedValue:hasRecordedValue(r),vendor:ven,ppend:ppend,noNamedOwner:false,workClassCode:String(r['Stage reason code']||''),workClass:'Purchase order action',workAction:'Complete the current purchase-order step.',classOrder:100,sourceShared:false,otherLiveBuyers:[],sharedLabel:'',raw:r}); }
   return items;
 }
 
 /* ---- render helpers ---- */
 function chip(doc){ const c=doc==='PR'?'#2563eb':'#0891b2'; return '<span style="display:inline-block;background:'+c+';color:#fff;font-family:'+FONT+';font-size:9px;font-weight:800;padding:1px 5px;margin-right:6px;vertical-align:middle;">'+doc+'</span>'; }
-function card2(doc,bk,x,tr){ const a=x.c?(x.sum/x.c):0; return '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;background:'+GRAD[bk]+';border:1px solid #e8ecf2;border-top:3px solid '+COLOR[bk]+';border-radius:10px;box-shadow:0 1px 3px rgba(16,24,40,0.08);"><tr><td style="padding:11px 13px;"><table role="presentation" cellpadding="0" cellspacing="0"><tr><td valign="middle" bgcolor="'+(doc==='PR'?'#2563eb':'#0891b2')+'" style="background:'+(doc==='PR'?'#2563eb':'#0891b2')+';padding:2px 6px;font-family:'+FONT+';font-size:9px;font-weight:800;color:#ffffff;border-radius:3px;">'+doc+'</td><td width="6" style="width:6px;">&#160;</td><td valign="middle" style="font-family:'+FONT+';font-size:9.5px;font-weight:800;color:#5b6b7f;text-transform:uppercase;">'+esc(bk)+'</td></tr></table><div style="margin:6px 0 2px;white-space:nowrap;"><span style="font-family:'+FONT+';font-size:24px;font-weight:800;color:'+COLOR[bk]+';">'+x.n+'</span><span style="font-family:'+FONT+';font-size:12px;font-weight:800;color:'+RED+';"> ('+a.toFixed(1)+'d)</span>'+deltaBadge(tr,x.n)+'</div><div style="font-family:'+FONT+';font-size:11px;font-weight:700;color:'+TEAL+';">AED '+money(x.amt)+'</div>'+histLine(tr)+'</td></tr></table>'; }
+function card2(doc,bk,x,tr){ const a=x.c?(x.sum/x.c):0, price=x.priced?(x.priced+' priced &#183; AED '+money(x.amt)):'not yet priced'; return '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;background:'+GRAD[bk]+';border:1px solid #e8ecf2;border-top:3px solid '+COLOR[bk]+';border-radius:10px;box-shadow:0 1px 3px rgba(16,24,40,0.08);"><tr><td style="padding:11px 13px;"><table role="presentation" cellpadding="0" cellspacing="0"><tr><td valign="middle" bgcolor="'+(doc==='PR'?'#2563eb':'#0891b2')+'" style="background:'+(doc==='PR'?'#2563eb':'#0891b2')+';padding:2px 6px;font-family:'+FONT+';font-size:9px;font-weight:800;color:#ffffff;border-radius:3px;">'+doc+'</td><td width="6" style="width:6px;">&#160;</td><td valign="middle" style="font-family:'+FONT+';font-size:9.5px;font-weight:800;color:#5b6b7f;text-transform:uppercase;">'+esc(bk)+'</td></tr></table><div style="margin:6px 0 2px;white-space:nowrap;"><span style="font-family:'+FONT+';font-size:24px;font-weight:800;color:'+COLOR[bk]+';">'+x.n+'</span><span style="font-family:'+FONT+';font-size:12px;font-weight:800;color:'+RED+';"> ('+a.toFixed(1)+'d)</span>'+deltaBadge(tr,x.n)+'</div><div style="font-family:'+FONT+';font-size:11px;font-weight:700;color:'+TEAL+';">'+price+(x.unpriced?' &#183; '+x.unpriced+' not yet priced':'')+'</div>'+histLine(tr)+'</td></tr></table>'; }
 // Compact cards in ONE row: PR cards | vertical divider | PO cards. Width auto-shrinks to fit W (capped at 200px).
 function cardrow2(pairs,agg,trFn){
   const live=pairs.filter(([d,bk])=>agg[d+'|'+bk]&&agg[d+'|'+bk].n>0); if(!live.length) return '';
@@ -185,6 +224,17 @@ function b(s){ return '<b style="color:'+NAVY+';">'+s+'</b>'; }
 function nm(u){ return '<span style="font-weight:700;color:'+NAVY+';">'+esc(u)+'</span>'; }
 function sv(t,col){ return '<span style="color:'+col+';font-weight:700;">'+t+'</span>'; }
 function agec(a){ a=Math.round(a||0); const col=a>30?'#b91c1c':(a>7?'#c2410c':'#16794a'); return '<span style="font-weight:700;color:'+col+';">'+a+'d</span>'; }
+function pricedStats(items){
+  const priced=(items||[]).filter(it=>it.hasRecordedValue), unpriced=(items||[]).length-priced.length;
+  return {priced:priced.length,unpriced,value:priced.reduce((sum,it)=>sum+it.value,0)};
+}
+function priceLine(items){
+  const s=pricedStats(items);
+  if(!s.priced)return b('not yet priced');
+  return b(s.priced+' priced')+', worth '+b('AED '+money(s.value))+(s.unpriced?' &#183; '+b(s.unpriced+' not yet priced'):'');
+}
+function itemPrice(it){ return it.hasRecordedValue?'AED '+money(it.value):'Not yet priced'; }
+function agePhrase(it){ return it&&it.clockLabel?it.clockLabel:('age '+Math.round(it&&it.age||0)+' days'); }
 function otable(cols,rows){ const th='color:#fff;font-family:'+FONT+';font-weight:800;font-size:10.5px;padding:8px 11px;white-space:nowrap;background:'+NAVY+';'; const head='<tr>'+cols.map(c=>'<th style="'+th+(c[2]==='r'?'text-align:right;':(c[2]==='c'?'text-align:center;':'text-align:left;'))+'width:'+c[1]+'px;">'+c[0]+'</th>').join('')+'</tr>'; let body=''; rows.forEach((cells,i)=>{ const bg=i%2===0?'#ffffff':'#f7f9fc'; const last=(i===rows.length-1); const td='padding:8px 11px;'+(last?'':'border-bottom:1px solid #eef1f6;')+'font-family:'+FONT+';font-size:11.5px;background:'+bg+';white-space:nowrap;'; body+='<tr>'+cells.map((cell,j)=>'<td style="'+td+(j>0?'border-left:1px solid #f1f4f8;':'')+(cols[j][2]==='r'?'text-align:right;':(cols[j][2]==='c'?'text-align:center;':''))+'">'+cell+'</td>').join('')+'</tr>'; }); return '<table width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;border-collapse:separate;border-spacing:0;background:#fff;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;">'+head+body+'</table>'; }
 function SH(t,s){ return '<div style="font-family:'+FONT+';font-weight:800;font-size:15px;color:'+NAVY+';margin:0 0 2px;">'+t+'</div>'+(s?'<div style="font-family:'+FONT+';font-size:11.5px;color:#7688a0;margin:0 0 9px;">'+s+'</div>':''); }
 
@@ -193,13 +243,13 @@ function grpBy(arr,key){ const g={}; for(const it of arr){ const k=key(it); (g[k
 function dchip(doc){ const c=doc==='PO'?'#0891b2':'#2563eb'; return ' <b style="font-family:'+FONT+';font-size:11px;color:'+c+';">('+doc+')</b>'; }
 function f_owners(its,L,col,title,label){
   const persons=its.filter(it=>it.ppend!==false&&it.stage!=='Sent to Supplier'&&it.stage!=='Pending Invoicing');
-  const g={}; for(const it of persons){ const key=String(it.owner==null?'':it.owner).trim().toLowerCase()+'|'+it.doc; const e=g[key]||(g[key]={n:0,ages:[],val:0,br:0,bk:{},disp:{},doc:it.doc}); e.n++; e.val+=it.value; e.bk[it.stage]=(e.bk[it.stage]||0)+1; e.disp[it.owner]=(e.disp[it.owner]||0)+1; if(it.age!=null){e.ages.push(it.age); if(it.age>7)e.br++;} }
-  const rows=[]; for(const [u,e] of Object.entries(g).sort((a,b2)=>b2[1].n-a[1].n)){ const okey=u.slice(0,u.lastIndexOf('|')); if(okey==='(unassigned)'||okey==='')continue; const disp=Object.entries(e.disp).sort((a,b2)=>b2[1]-a[1])[0][0]; const stg=Object.entries(e.bk).sort((a,b2)=>b2[1]-a[1])[0][0]; rows.push([nm(disp)+dchip(e.doc),sv(stg,COLOR[stg]),String(e.n),agec(avg(e.ages)),agec(e.ages.length?Math.max(...e.ages):0),sv(String(e.br),'#b91c1c'),'AED '+money(e.val)]); if(rows.length>=6)break; }
+  const g={}; for(const it of persons){ const key=String(it.owner==null?'':it.owner).trim().toLowerCase()+'|'+it.doc; const e=g[key]||(g[key]={n:0,ages:[],val:0,priced:0,br:0,bk:{},disp:{},doc:it.doc}); e.n++; if(it.hasRecordedValue){e.val+=it.value;e.priced++;} e.bk[it.stage]=(e.bk[it.stage]||0)+1; e.disp[it.owner]=(e.disp[it.owner]||0)+1; if(it.age!=null){e.ages.push(it.age); if(it.age>7)e.br++;} }
+  const rows=[]; for(const [u,e] of Object.entries(g).sort((a,b2)=>b2[1].n-a[1].n)){ const okey=u.slice(0,u.lastIndexOf('|')); if(okey==='(unassigned)'||okey==='')continue; const disp=Object.entries(e.disp).sort((a,b2)=>b2[1]-a[1])[0][0]; const stg=Object.entries(e.bk).sort((a,b2)=>b2[1]-a[1])[0][0]; rows.push([nm(disp)+dchip(e.doc),sv(stg,COLOR[stg]),String(e.n),agec(avg(e.ages)),agec(e.ages.length?Math.max(...e.ages):0),sv(String(e.br),'#b91c1c'),e.priced?(e.priced+' priced &#183; AED '+money(e.val)):'Not yet priced']); if(rows.length>=6)break; }
   if(!rows.length) return '';
   const named=persons.filter(it=>{const o=String(it.owner==null?'':it.owner).trim().toLowerCase(); return o!==''&&o!=='(unassigned)';});
   const n=named.length, br=named.filter(it=>(it.age||0)>7).length;
   return finding(L,col,title,n+' items',b(n)+' items are pending with a person; '+b(br)+' are past the 7-day SLA. Top owners &#8212; chase these queues first.',
-    otable([[label||'Pending with',172,'l'],['Stage',140,'l'],['Items',52,'c'],['Avg',52,'c'],['Oldest',58,'c'],['Br&gt;7',50,'c'],['Value',120,'r']],rows));
+    otable([[label||'Pending with',172,'l'],['Stage',140,'l'],['Items',52,'c'],['Avg',52,'c'],['Oldest',58,'c'],['Br&gt;7',50,'c'],['Recorded value',180,'r']],rows));
 }
 function f_vendor(its,bucket,L,col,title,action){
   const vs=its.filter(it=>it.stage===bucket); if(!vs.length) return '';
@@ -211,12 +261,12 @@ function f_vendor(its,bucket,L,col,title,action){
 }
 function f_oldest(its,L,col){
   const old=its.slice().sort((a,b2)=>(b2.age||0)-(a.age||0)).slice(0,6); if(!old.length) return '';
-  const rows=old.map(it=>['<span style="font-weight:700;color:'+NAVY+';">'+esc(it.ref)+'</span>',sv(it.typ,TYCOL[it.typ]),agec(it.age),sv(it.stage,COLOR[it.stage]),esc(String(it.owner||'-').slice(0,20)),esc(String(it.dept||'-').slice(0,20))]);
-  return finding(L,col,'Escalate &#8212; oldest &amp; most overdue','top '+old.length,'Oldest items are stuck up to '+b(old[0].age+' days')+' &#8212; '+esc(old[0].ref)+' with '+nm(old[0].owner)+'. Escalate the top rows.',
-    otable([['Ref',118,'l'],['Type',46,'c'],['Age',54,'c'],['Stage',150,'l'],['Owner/Vendor',150,'l'],['Dept',150,'l']],rows));
+  const rows=old.map(it=>['<span style="font-weight:700;color:'+NAVY+';">'+esc(it.ref)+'</span>',sv(it.typ,TYCOL[it.typ]),esc(agePhrase(it)),sv(it.stage,COLOR[it.stage]),esc(String(it.owner||'-').slice(0,20)),esc(String(it.dept||'-').slice(0,20))]);
+  return finding(L,col,'Escalate &#8212; oldest &amp; most overdue','top '+old.length,'Oldest item was '+b(agePhrase(old[0]))+' &#8212; '+esc(old[0].ref)+' with '+nm(old[0].owner)+'. Escalate the top rows.',
+    otable([['Ref',118,'l'],['Type',46,'c'],['Age / source',145,'l'],['Stage',150,'l'],['Owner/Vendor',150,'l'],['Dept',150,'l']],rows));
 }
 function f_value(its,L,col){
-  const tv=its.slice().sort((a,b2)=>b2.value-a.value).slice(0,6); if(!tv.length) return '';
+  const tv=its.filter(it=>it.hasRecordedValue).sort((a,b2)=>b2.value-a.value).slice(0,6); if(!tv.length) return '';
   const s=tv.reduce((a,it)=>a+it.value,0);
   const rows=tv.map(it=>['<span style="font-weight:700;color:'+NAVY+';">'+esc(it.ref)+'</span>',sv(it.typ,TYCOL[it.typ]),'<b>AED '+money(it.value)+'</b>',agec(it.age),sv(it.stage,COLOR[it.stage]),esc(String(it.owner||'-').slice(0,20))]);
   return finding(L,col,'High-value at risk','AED '+money(s),'The biggest exposure is '+b('AED '+money(tv[0].value))+' ('+esc(tv[0].ref)+'). Top 6 total '+b('AED '+money(s))+' &#8212; clear these for the biggest cash impact.',
@@ -231,9 +281,9 @@ function f_sla(its,L,col){
     otable([['Stage',180,'l'],['Items',56,'c'],['Breach&gt;7d',82,'c'],['Breach%',66,'c'],['Avg',52,'c']],rows));
 }
 function f_dept(its,L,col){
-  const g={}; for(const it of its){ const d=it.dept||'(unspecified)'; const e=g[d]||(g[d]={n:0,br:0,ages:[],val:0}); e.n++; e.val+=it.value; if(it.age!=null){e.ages.push(it.age); if(it.age>7)e.br++;} }
+  const g={}; for(const it of its){ const d=it.dept||'(unspecified)'; const e=g[d]||(g[d]={n:0,br:0,ages:[],val:0,priced:0}); e.n++; if(it.hasRecordedValue){e.val+=it.value;e.priced++;} if(it.age!=null){e.ages.push(it.age); if(it.age>7)e.br++;} }
   const ent=Object.entries(g).sort((a,b2)=>b2[1].n-a[1].n);
-  const rows=ent.slice(0,8).map(([d,e])=>[esc(d.slice(0,28)),String(e.n),sv(String(e.br),'#b91c1c'),agec(avg(e.ages)),'AED '+money(e.val)]);
+  const rows=ent.slice(0,8).map(([d,e])=>[esc(d.slice(0,28)),String(e.n),sv(String(e.br),'#b91c1c'),agec(avg(e.ages)),e.priced?(e.priced+' priced &#183; AED '+money(e.val)):'Not yet priced']);
   return finding(L,col,'By department &#8212; where it sits','',b(ent[0][0])+' has the most ('+b(ent[0][1].n)+' items). Full split below &#8212; route to each department head.',
     otable([['Department',210,'l'],['Items',56,'c'],['Breach&gt;7d',82,'c'],['Avg',52,'c'],['Value',130,'r']],rows));
 }
@@ -243,11 +293,11 @@ function f_noNamedOwner(its,L,col){
   const body=Object.entries(groups).map(([key,list])=>{
     const [owner,reason,cls,dept]=key.split('|');
     const oldest=Math.max(...list.map(it=>Number(it.age)||0));
-    const value=list.reduce((sum,it)=>sum+it.value,0);
-    return [esc(owner),esc(reason),esc(cls),esc(dept),String(list.length),agec(oldest),'AED '+money(value)];
+    const pricing=pricedStats(list);
+    return [esc(owner),esc(reason),esc(cls),esc(dept),String(list.length),agec(oldest),pricing.priced?(pricing.priced+' priced &#183; AED '+money(pricing.value)):'Not yet priced'];
   }).sort((a,b2)=>Number(b2[4])-Number(a[4]));
   return finding(L,col,'No named owner',rows.length+' requisitions',b(rows.length)+' requisitions have no active owner or no usable email address. They remain visible here and are not emailed as personal queues.',
-    otable([['Recorded holder',150,'l'],['Reason',150,'l'],['Class of work',220,'l'],['Department',155,'l'],['Items',54,'c'],['Oldest',58,'c'],['Value',110,'r']],body));
+    otable([['Recorded holder',150,'l'],['Reason',150,'l'],['Class of work',220,'l'],['Department',155,'l'],['Items',54,'c'],['Oldest',58,'c'],['Recorded value',180,'r']],body));
 }
 
 /* ---- divisions ---- */
@@ -280,15 +330,15 @@ async function buildXlsxBase64(fil, cfg){
     {header:'Stage reason code',key:'classcode',width:32},{header:'Class of work',key:'workclass',width:58},{header:'What to do',key:'workaction',width:48},
     {header:'Pending Internal / Client',key:'pendingside',width:25},{header:'Step name',key:'step',width:34},{header:'Status',key:'status',width:22},{header:'Department',key:'dept',width:26},
     {header:'Location',key:'loc',width:22},{header:'Pending With',key:'pend',width:20},{header:'Delivery issue',key:'deliveryissue',width:28},{header:'Vendor',key:'vendor',width:30},
-    {header:'Value (AED excl. VAT)',key:'value',width:19},{header:'Age (days)',key:'age',width:11},{header:'Age band',key:'ageband',width:13},{header:'Created',key:'created',width:13},
-    {header:'Step date',key:'stepd',width:13},{header:'Clock source',key:'clocksrc',width:24},{header:'Title / Name',key:'title',width:34},{header:'Preparer / Linked PR',key:'prep',width:20}
+    {header:'Value (AED excl. VAT)',key:'value',width:19},{header:'Pricing state',key:'pricing',width:18},{header:'Age (days)',key:'age',width:11},{header:'Age basis',key:'agebasis',width:18},{header:'Age band',key:'ageband',width:24},{header:'Shared assignment',key:'shared',width:42},{header:'Created',key:'created',width:13},
+    {header:'Step date',key:'stepd',width:13},{header:'Clock source',key:'clocksrc',width:30},{header:'Title / Name',key:'title',width:34},{header:'Preparer / Linked PR',key:'prep',width:20}
   ];
   fil.slice().sort((a,b2)=>(a.classOrder||999)-(b2.classOrder||999)||String(a.dept||'').localeCompare(String(b2.dept||''))||(b2.age||0)-(a.age||0)||b2.value-a.value).forEach(it=>{ const r=it.raw; let status,loc,ven,created,stepd,title,prep;
     if(it.doc!=='PO'){ status=String(r['Status']||''); loc=r['Location']; ven=''; created=ymdStr(r['Created date']); stepd=ymdStr(r['Step date and time']); title=r['Name']; prep=r['Preparer']; }
     else { status=(String(r['Approval status']||'')+' / '+String(r['Purchase order status']||'')).replace(/^ \/ | \/ $/g,''); loc=r['Location']; ven=r['Vendor name']; created=ymdStr(r['Created date and time']); stepd=ymdStr(r['Step date and time']); title=''; prep=r['Purchase requisition']; }
     const pend=it.owner;  // computed owner: ops-user for ops-confirm, Created-by for Draft POs, approver otherwise
     const qref=(it.doc!=='PO'? String(r['Quotation reference']||'') : '');
-    ws.addRow({ref:it.ref,doc:it.typ,qref,stage:it.stage,classcode:it.workClassCode,workclass:it.workClass,workaction:it.workAction,pendingside:it.pendingSide||pendingSide(it),step:r['Step name'],status,dept:it.dept,loc,pend,deliveryissue:it.deliveryIssue||'',vendor:ven,value:Math.round((it.value||0)*100)/100,age:(it.age==null?null:it.age),ageband:it.ageBand,created,stepd,clocksrc:it.doc==='PO'?(r['Clock label']||'since'):'',title,prep}); });
+    ws.addRow({ref:it.ref,doc:it.typ,qref,stage:it.stage,classcode:it.workClassCode,workclass:it.workClass,workaction:it.workAction,pendingside:it.pendingSide||pendingSide(it),step:r['Step name'],status,dept:it.dept,loc,pend,deliveryissue:it.deliveryIssue||'',vendor:ven,value:it.hasRecordedValue?Math.round(it.value*100)/100:null,pricing:it.hasRecordedValue?'Price recorded':'Not yet priced',age:(it.age==null?null:it.age),agebasis:it.clockBasis==='raised'?'Raised date':'Current step date',ageband:ageBandLabel(it),shared:it.sharedLabel||'Not shared',created,stepd,clocksrc:it.clockLabel||'',title,prep}); });
   const DIVCOL={procurement:'FF1D4ED8',finance:'FF16A34A',ops_hm:'FF0F766E',ops_all:'FF7C3AED'};
   const HEAD=DIVCOL[cfg&&cfg.key]||'FF14315E';
   const h=ws.getRow(1); h.height=26;
@@ -319,17 +369,17 @@ function f_details(fil, cfg){
       +'<td style="'+tdl+'">'+esc(String(desc(it)).slice(0,46))+'</td>'
       +'<td style="'+tdl+'color:'+HNAVY+';white-space:nowrap;">'+esc(String(it.raw['Step name']||'-').slice(0,28)+clockNote(it.raw))+'</td>'
       +'<td style="'+tdl+'font-weight:600;white-space:nowrap;">'+esc(String(it.owner||'-').slice(0,18))+'</td>'
-      +'<td align="right" style="'+tdl+'font-weight:600;white-space:nowrap;">AED '+money(it.value)+'</td>'
-      +'<td align="right" style="'+tdl+'font-weight:700;color:'+acol+';white-space:nowrap;">'+a+'d</td></tr>'; }).join('');
+      +'<td align="right" style="'+tdl+'font-weight:600;white-space:nowrap;">'+esc(itemPrice(it))+'</td>'
+      +'<td align="right" style="'+tdl+'font-weight:700;color:'+acol+';white-space:nowrap;">'+esc(agePhrase(it))+'</td></tr>'; }).join('');
   const more=fil.length>15?'<tr><td colspan="6" style="padding:7px 9px;font:400 11px '+HF+';color:#5A6578;background:#F9FAFC;">&#8230;and '+(fil.length-15)+' more &#8212; full list in the attached '+cfg.xlsx+'.</td></tr>':'';
   return '<div style="font:700 14px '+HF+';color:'+HNAVY+';margin:16px 0 2px;">Details &#8212; PR / PO list</div>'
-    +'<div style="font:400 11px '+HF+';color:#5A6578;margin:0 0 10px;">Oldest first &#183; age = days at the current step.</div>'
+    +'<div style="font:400 11px '+HF+';color:#5A6578;margin:0 0 10px;">Oldest first &#183; every age says whether it starts at the raised date or a distinct current-step date.</div>'
     +'<table role="presentation" width="'+W+'" cellpadding="0" cellspacing="0" style="width:'+W+'px;border:1px solid '+HBORD+';border-collapse:separate;border-spacing:0;border-radius:8px;overflow:hidden;box-shadow:0 1px 3px rgba(16,24,40,0.07);">'+head+body+more+'</table>';
 }
 
 function buildDivision(cfg, items, hist){
   const fil=filterDiv(items,cfg);
-  const agg={}; for(const it of fil){ const k=it.doc+'|'+it.stage; const x=agg[k]||(agg[k]={n:0,sum:0,c:0,amt:0}); x.n++; x.amt+=it.value; if(it.age!=null){x.sum+=it.age;x.c++;} }
+  const agg={}; for(const it of fil){ const k=it.doc+'|'+it.stage; const x=agg[k]||(agg[k]={n:0,sum:0,c:0,amt:0,priced:0,unpriced:0}); x.n++; if(it.hasRecordedValue){x.amt+=it.value;x.priced++;}else x.unpriced++; if(it.age!=null){x.sum+=it.age;x.c++;} }
   const pairs=STAGE_ORDER.filter(p=>agg[p[0]+'|'+p[1]]);
   // Per-stage 3-day history (from the git-snapshot data), shown vertically inside each card.
   const hdays=histDayList(); const histAgg={};
@@ -338,16 +388,16 @@ function buildDivision(cfg, items, hist){
   const cards=cardrow2(pairs,agg,trFn);
   const analysis=cfg.findings.map(fn=>fn(fil)).join('');
   const stamp=new Date(Date.now()+4*3600*1000).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric',timeZone:'UTC'});
-  const tot=fil.length, totv=fil.reduce((a,it)=>a+it.value,0);
+  const tot=fil.length, pricing=pricedStats(fil), totv=pricing.value;
   const att='<div style="border:1px solid #cbd9ec;background:#f2f7ff;padding:11px 14px;margin:0 0 2px;border-radius:8px;font:400 12px '+HF+';color:#334867;">&#8505;&#65039; <b style="color:'+HNAVY+';">Note &#8212; Data source of truth:</b> all data and counts are based on the F&amp;O PR / PO actual data (Dynamics 365 Finance &amp; Operations).</div>';
   const titleTxt=cfg.title.replace(/&#183;/g,'·').replace(/&amp;/g,'&');
   const trendBlock='<table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:separate;"><tr><td width="300" valign="top" style="width:300px;">'
-    +tcard('Open items &#8212; 3 days',trendCols(hist,s=>filterDiv(s,cfg).length,tot),cfg.accent||'#3b82f6','AED '+money(totv))
+    +tcard('Open items &#8212; 3 days',trendCols(hist,s=>filterDiv(s,cfg).length,tot),cfg.accent||'#3b82f6',pricing.priced?pricing.priced+' priced &#183; AED '+money(totv):'not yet priced')
     +'</td></tr></table><div style="height:12px;font-size:12px;line-height:12px;">&#160;</div>';
   const warning=(fil[0]&&fil[0].freshnessWarning)||items.freshnessWarning||'';
   const inner='<div style="width:'+W+'px;font-family:'+FONT+';color:#22303c;">'
     +freshnessBanner(warning)
-    +'<div style="font:400 12px '+HF+';color:#607083;margin:0 0 10px;">This queue: '+b(tot)+' open items &#183; '+b('AED '+money(totv))+' &#183; live-pipeline logic, reconciles to the dashboard.</div>'
+    +'<div style="font:400 12px '+HF+';color:#607083;margin:0 0 10px;">This queue: '+b(tot)+' open items &#183; '+priceLine(fil)+' &#183; live-pipeline logic, reconciles to the dashboard.</div>'
     +trendBlock+cards+att
     +'<div style="font-family:'+FONT+';font-weight:800;font-size:15px;color:'+NAVY+';margin:16px 0 2px;">&#128269; Analysis &#8212; who to chase today</div>'
     +'<div style="font-family:'+FONT+';font-size:11.5px;color:#7688a0;margin:0 0 11px;">Auto-generated daily from the latest data, scoped to '+cfg.title+'.</div>'
@@ -362,7 +412,7 @@ function buildDivision(cfg, items, hist){
     +'<tr><td style="background:#fff;border-left:1px solid '+HBORD+';border-right:1px solid '+HBORD+';padding:18px 20px;">'+inner+'</td></tr>'
     +'<tr><td style="background:'+HNAVY+';padding:14px 20px;border-top:3px solid '+HGOLD+';border-radius:0 0 14px 14px;font:400 11px '+HF+';color:'+HMUT+';">'
     +'<div style="color:'+HGOLD+';font-weight:700;">FOR EXCELLENCE WE STRIVE</div>'
-    +'<div style="margin-top:6px;">PR / PO Pipeline &#183; '+titleTxt+' &#183; '+stamp+' &#183; automated daily 10:00 AM Dubai. Source: live-pipeline PR/PO in D365 F&amp;O. <b>Age = days at the current workflow step.</b> Full line-item list attached ('+cfg.xlsx+').</div></td></tr></table>';
+    +'<div style="margin-top:6px;">PR / PO Pipeline &#183; '+titleTxt+' &#183; '+stamp+' &#183; automated daily 10:00 AM Dubai. Source: live-pipeline PR/PO in D365 F&amp;O. <b>Each age is labelled by its source event.</b> Full line-item list attached ('+cfg.xlsx+').</div></td></tr></table>';
   const wrap='<!doctype html><html xmlns:o="urn:schemas-microsoft-com:office:office"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="X-UA-Compatible" content="IE=edge"><title>'+cfg.heading+'</title>'
     +'<!--[if mso]><xml><o:OfficeDocumentSettings><o:PixelsPerInch>96</o:PixelsPerInch></o:OfficeDocumentSettings></xml><![endif]-->'
     +'<style>table{mso-table-lspace:0pt;mso-table-rspace:0pt;border-collapse:collapse;} td{mso-line-height-rule:exactly;} img{-ms-interpolation-mode:bicubic;} body{-webkit-text-size-adjust:100%;-ms-text-size-adjust:100%;}</style></head>'
@@ -422,9 +472,16 @@ const PW=1000;
 function pcard(label,val,sub,col,bg,vs){ return '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;background:'+bg+';border:1px solid #e8ecf2;border-top:3px solid '+col+';border-radius:10px;box-shadow:0 1px 3px rgba(16,24,40,0.08);"><tr><td height="92" valign="middle" style="padding:11px 13px;height:92px;"><div style="font-family:'+FONT+';font-size:9.5px;font-weight:800;color:#5b6b7f;text-transform:uppercase;">'+label+'</div><div style="margin:6px 0 2px;white-space:nowrap;font-family:'+FONT+';font-size:'+(vs||24)+'px;font-weight:800;color:'+col+';">'+val+'</div><div style="font-family:'+FONT+';font-size:11px;font-weight:700;color:'+TEAL+';white-space:nowrap;">'+sub+'</div></td></tr></table>'; }
 function buildPersonal(p,hist){
   const fil=p.items.slice().sort((a,b2)=>(a.classOrder||999)-(b2.classOrder||999)||String(a.dept||'').localeCompare(String(b2.dept||''))||(b2.age||0)-(a.age||0)||b2.value-a.value);
-  const n=fil.length, totv=fil.reduce((a,it)=>a+it.value,0);
+  const n=fil.length, pricing=pricedStats(fil), totv=pricing.value;
+  const pricingQueue=fil.filter(it=>it.workClassCode==='ACTIVE_LINES_NOT_FULLY_PRICED').length;
+  const unvaluedOutsidePricing=fil.filter(it=>!it.hasRecordedValue&&it.workClassCode!=='ACTIVE_LINES_NOT_FULLY_PRICED').length;
+  const sourceShared=fil.filter(it=>it.sourceShared).length;
+  const sharedWithOthers=fil.filter(it=>it.otherLiveBuyers&&it.otherLiveBuyers.length).length;
   const prn=fil.filter(it=>it.doc!=='PO').length, pon=n-prn;
   const old=fil.slice().sort((a,b2)=>(b2.age||0)-(a.age||0))[0], oldAge=Math.round((old&&old.age)||0);
+  const priceSummaryText=n+' item'+(n===1?'':'s')+' pending your action · '+pricingQueue+' still being priced · '+(pricing.priced?pricing.priced+' priced, worth AED '+money(totv):'not yet priced')+(unvaluedOutsidePricing?' · '+unvaluedOutsidePricing+' other item'+(unvaluedOutsidePricing===1?'':'s')+' without a recorded price':'');
+  const oldestSummaryText=oldAge>0?'Oldest item was '+agePhrase(old)+'.':'';
+  const sharedSummaryText=sourceShared?sourceShared+' source-shared item'+(sourceShared===1?'':'s')+' · '+sharedWithOthers+' of these are shared with other active buyers. Inactive usernames are excluded from the names shown on each line.':'';
   const br=fil.filter(it=>(it.age||0)>7).length;
   const stamp=new Date(Date.now()+4*3600*1000).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric',timeZone:'UTC'});
   // Operations-to-Confirm split (per CK): "Unit prices updated" = shared with the CLIENT for confirmation ->
@@ -437,20 +494,20 @@ function buildPersonal(p,hist){
   // First card = 3-day pending trend (11th / 12th / Today); Total value, Oldest, SLA cards stay.
   const myCount=snap=>{ const e=groupByOwner(personalPool(snap)).find(x=>x.key===p.key); return e?e.items.length:0; };
   const trendCard=tcard('Items pending &#8212; 3 days',trendCols(hist,myCount,n),'#3b82f6','PR '+prn+' &#183; PO '+pon);
-  const defs=[['Total value','AED '+money(totv),'across your queue','#0f766e','#ebfbf7',17],
+  const defs=[['Priced value',pricing.priced?'AED '+money(totv):'Not yet priced',pricing.priced+' priced &#183; '+pricing.unpriced+' without a recorded price','#0f766e','#ebfbf7',17],
               ['Oldest item',oldAge+'d',esc(old?String(old.ref):'-'),'#dc2626','#fef2f2',22],
               ['Past 7-day SLA',String(br),'of '+n+' item'+(n===1?'':'s'),'#f59e0b','#fff9ec',22]];
   const cardsHtml='<table class="summary-grid" role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:separate;"><tr><td width="'+TW+'" valign="top" style="width:'+TW+'px;">'+trendCard+'</td>'+gutter+defs.map((c,i)=>'<td width="'+cw+'" valign="top" style="width:'+cw+'px;">'+pcard(c[0],c[1],c[2],c[3],c[4],c[5])+'</td>'+(i<defs.length-1?gutter:'')).join('')+'</tr></table><div style="height:'+G+'px;font-size:'+G+'px;line-height:'+G+'px;">&#160;</div>';
   // Stage cards row — merged per STAGE (no PR/PO duplicates; doc split already shown on "Items pending").
   // Rendered only when the person has MORE than one stage; a single redundant stage card is dropped.
-  const sagg={}; for(const it of xfil){ const x=sagg[it.stage]||(sagg[it.stage]={n:0,sum:0,c:0,amt:0}); x.n++; x.amt+=it.value; if(it.age!=null){x.sum+=it.age;x.c++;} }
+  const sagg={}; for(const it of xfil){ const x=sagg[it.stage]||(sagg[it.stage]={n:0,sum:0,c:0,amt:0,priced:0,unpriced:0}); x.n++; if(it.hasRecordedValue){x.amt+=it.value;x.priced++;}else x.unpriced++; if(it.age!=null){x.sum+=it.age;x.c++;} }
   const SORD=['Re-Assigned/Rejected','Pending Internal','Pending Client','Procurement','Dep Managers','Finance'];
   const sl=SORD.filter(s=>sagg[s]).concat(Object.keys(sagg).filter(s=>!SORD.includes(s)));
   // Per-stage 3-day history for THIS person (vertical rows inside each stage card).
   const hdays=histDayList(); const histStage={};
   for(const hd of hdays){ if(hist&&hist[hd.ymd]){ const e2=groupByOwner(personalPool(hist[hd.ymd])).find(x=>x.key===p.key); const m={}; if(e2){ for(const it2 of e2.items){ const s2=pst(it2); m[s2]=(m[s2]||0)+1; } } histStage[hd.ymd]=m; } }
   const strFn=s=>hdays.map(hd=>({lab:hd.lab,n:histStage[hd.ymd]?String(histStage[hd.ymd][s]||0):'&#8211;'}));
-  const scard2=(bk,x,tr)=>{ const a=x.c?(x.sum/x.c):0; return '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;background:'+(GRAD[bk]||'#f6f8fb')+';border:1px solid #e8ecf2;border-top:3px solid '+(COLOR[bk]||NAVY)+';border-radius:10px;box-shadow:0 1px 3px rgba(16,24,40,0.08);"><tr><td style="padding:11px 13px;"><div style="font-family:'+FONT+';font-size:9.5px;font-weight:800;color:#5b6b7f;text-transform:uppercase;">'+esc(bk)+'</div><div style="margin:6px 0 2px;white-space:nowrap;"><span style="font-family:'+FONT+';font-size:24px;font-weight:800;color:'+(COLOR[bk]||NAVY)+';">'+x.n+'</span><span style="font-family:'+FONT+';font-size:12px;font-weight:800;color:'+RED+';"> ('+a.toFixed(1)+'d)</span>'+deltaBadge(tr,x.n)+'</div><div style="font-family:'+FONT+';font-size:11px;font-weight:700;color:'+TEAL+';">AED '+money(x.amt)+'</div>'+histLine(tr)+'</td></tr></table>'; };
+  const scard2=(bk,x,tr)=>{ const a=x.c?(x.sum/x.c):0, price=x.priced?(x.priced+' priced &#183; AED '+money(x.amt)):'not yet priced'; return '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;background:'+(GRAD[bk]||'#f6f8fb')+';border:1px solid #e8ecf2;border-top:3px solid '+(COLOR[bk]||NAVY)+';border-radius:10px;box-shadow:0 1px 3px rgba(16,24,40,0.08);"><tr><td style="padding:11px 13px;"><div style="font-family:'+FONT+';font-size:9.5px;font-weight:800;color:#5b6b7f;text-transform:uppercase;">'+esc(bk)+'</div><div style="margin:6px 0 2px;white-space:nowrap;"><span style="font-family:'+FONT+';font-size:24px;font-weight:800;color:'+(COLOR[bk]||NAVY)+';">'+x.n+'</span><span style="font-family:'+FONT+';font-size:12px;font-weight:800;color:'+RED+';"> ('+a.toFixed(1)+'d)</span>'+deltaBadge(tr,x.n)+'</div><div style="font-family:'+FONT+';font-size:11px;font-weight:700;color:'+TEAL+';">'+price+(x.unpriced?' &#183; '+x.unpriced+' not yet priced':'')+'</div>'+histLine(tr)+'</td></tr></table>'; };
   const cw2=Math.min(200,Math.floor((PW-G*Math.max(0,sl.length-1))/Math.max(1,sl.length)));
   const stageCards=sl.length>1?'<table class="summary-grid" role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:separate;"><tr>'+sl.map((s,i)=>'<td width="'+cw2+'" valign="top" style="width:'+cw2+'px;">'+scard2(s,sagg[s],strFn(s))+'</td>'+(i<sl.length-1?gutter:'')).join('')+'</tr></table><div style="height:'+G+'px;font-size:'+G+'px;line-height:'+G+'px;">&#160;</div>':'';
   const prItems=xfil.filter(it=>it.doc==='PR');
@@ -458,8 +515,8 @@ function buildPersonal(p,hist){
   const classKeys=Object.keys(classGroups).sort((a,b2)=>(classGroups[a][0].classOrder||999)-(classGroups[b2][0].classOrder||999));
   const classSummary=classKeys.length?'<div style="font-family:'+FONT+';font-size:11.5px;color:#4b5c74;line-height:1.65;margin:0 0 12px;"><b style="color:'+NAVY+';">Shape of your PR queue:</b> '+classKeys.map(k=>esc(classGroups[k][0].workClass)+' <b style="color:'+NAVY+';">'+classGroups[k].length+'</b>').join(' &#183; ')+'</div>':'';
   const sectionMeta=[];
-  const detailTable=list=>'<div class="detail-scroll">'+otable([['PR #',84,'l'],['Site',92,'l'],['Description',142,'l'],['Class of work',180,'l'],['Department',118,'l'],['Value',82,'r'],['Age',42,'c'],['Band',56,'c'],['Queue',72,'l']],list.map(it=>[
-    '<span style="font-weight:700;color:'+NAVY+';">'+esc(it.ref)+'</span>',esc(String(it.raw['Location']||'-').slice(0,22)),esc(String(it.raw['Name']||'-').slice(0,34)),esc(it.workClass),esc(it.dept||'-'),'AED '+money(it.value),agec(it.age),esc(it.ageBand),esc(it.pendingSide==='Pending Client'||it.pendingSide==='Pending Internal'?it.pendingSide:'—')
+  const detailTable=list=>'<div class="detail-scroll">'+otable([['PR #',80,'l'],['Site',86,'l'],['Description',125,'l'],['Class of work',160,'l'],['Department',105,'l'],['Price',92,'r'],['Age / source',135,'l'],['Band',105,'l'],['Shared assignment',150,'l'],['Queue',70,'l']],list.map(it=>[
+    '<span style="font-weight:700;color:'+NAVY+';">'+esc(it.ref)+'</span>',esc(String(it.raw['Location']||'-').slice(0,22)),esc(String(it.raw['Name']||'-').slice(0,34)),esc(it.workClass),esc(it.dept||'-'),esc(itemPrice(it)),esc(agePhrase(it)),esc(ageBandLabel(it)),esc(it.sharedLabel||'Not shared'),esc(it.pendingSide==='Pending Client'||it.pendingSide==='Pending Internal'?it.pendingSide:'—')
   ]))+'</div>';
   const sectionHtml=classKeys.map(code=>{
     const items=classGroups[code], first=items[0], deptGroups=grpBy(items,it=>it.dept||'Department not reported');
@@ -470,7 +527,8 @@ function buildPersonal(p,hist){
       return '<div style="font-family:'+FONT+';font-size:12px;font-weight:800;color:'+NAVY+';margin:10px 0 6px;">'+esc(dept)+' &#183; '+rows.length+'</div>'
         +detailTable(rows);
     }).join('');
-    return '<div style="border-left:4px solid '+(COLOR[first.stage]||'#145A95')+';padding-left:12px;margin:18px 0 8px;"><div style="font-family:'+FONT+';font-size:15px;font-weight:800;color:'+NAVY+';">'+esc(first.workClass)+' &#183; '+items.length+'</div><div style="font-family:'+FONT+';font-size:11.5px;color:#607083;margin-top:2px;">'+esc(first.workAction)+'</div></div>'+deptHtml;
+    const sharedN=items.filter(it=>it.otherLiveBuyers&&it.otherLiveBuyers.length).length;
+    return '<div style="border-left:4px solid '+(COLOR[first.stage]||'#145A95')+';padding-left:12px;margin:18px 0 8px;"><div style="font-family:'+FONT+';font-size:15px;font-weight:800;color:'+NAVY+';">'+esc(first.workClass)+' &#183; '+items.length+'</div><div style="font-family:'+FONT+';font-size:11.5px;color:#607083;margin-top:2px;">'+esc(first.workAction)+(sharedN?' &#183; '+sharedN+' of these are shared with other buyers':'')+'</div></div>'+deptHtml;
   }).join('');
   const poItems=xfil.filter(it=>it.doc==='PO').sort((a,b2)=>(b2.age||0)-(a.age||0)||b2.value-a.value);
   if(poItems.length)sectionMeta.push({code:'PO_ACTION',label:'Purchase order action',count:poItems.length,departments:[]});
@@ -480,10 +538,11 @@ function buildPersonal(p,hist){
   const warning=(fil[0]&&fil[0].freshnessWarning)||'';
   const inner='<div class="mail-inner" style="width:'+PW+'px;font-family:'+FONT+';color:#22303c;">'
     +freshnessBanner(warning)
-    +'<div style="font:400 13px '+HF+';color:#334155;margin:0 0 8px;">Hi <b style="color:'+HNAVY+';">'+esc(firstName(p.user))+'</b> &#8212; you have '+b(n)+' open PR / PO item'+(n===1?'':'s')+' pending your action, totalling '+b('AED '+money(totv))+'.'+(oldAge>0?' The oldest has been waiting '+b(oldAge+' days')+'.':'')+'</div>'
+    +'<div style="font:400 13px '+HF+';color:#334155;margin:0 0 8px;">Hi <b style="color:'+HNAVY+';">'+esc(firstName(p.user))+'</b> &#8212; '+esc(priceSummaryText)+'.'+(oldestSummaryText?' '+esc(oldestSummaryText):'')+'</div>'
+    +(sharedSummaryText?'<div style="font:700 12px '+HF+';color:#334155;margin:0 0 10px;">'+esc(sharedSummaryText)+'</div>':'')
     +cardsHtml+stageCards+att
     +'<div style="font-family:'+FONT+';font-weight:800;font-size:15px;color:'+NAVY+';margin:16px 0 2px;">&#128203; Your pending items</div>'
-    +'<div style="font-family:'+FONT+';font-size:11.5px;color:#7688a0;margin:0 0 9px;">Class first &#183; department next &#183; oldest then largest &#183; age = days at the current workflow step'+(clientN>0?' &#183; Queue shows Pending Internal or Pending Client':'')+'.</div>'
+    +'<div style="font-family:'+FONT+';font-size:11.5px;color:#7688a0;margin:0 0 9px;">Class first &#183; department next &#183; oldest then largest &#183; each age names its source event'+(clientN>0?' &#183; Queue shows Pending Internal or Pending Client':'')+'.</div>'
     +classSummary+sectionHtml+poHtml+'</div>';
   const shell='<table class="mail-shell" role="presentation" width="'+(PW+40)+'" cellpadding="0" cellspacing="0" style="width:'+(PW+40)+'px;max-width:'+(PW+40)+'px;">'
     +'<tr><td style="background:'+HNAVY+';padding:16px 20px;border-bottom:3px solid '+HGOLD+';border-radius:14px 14px 0 0;"><table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>'
@@ -493,7 +552,7 @@ function buildPersonal(p,hist){
     +'<tr><td style="background:#fff;border-left:1px solid '+HBORD+';border-right:1px solid '+HBORD+';padding:16px 20px;">'+inner+'</td></tr>'
     +'<tr><td style="background:'+HNAVY+';padding:12px 20px;border-top:3px solid '+HGOLD+';border-radius:0 0 14px 14px;font:400 11px '+HF+';color:'+HMUT+';">'
     +'<div style="color:'+HGOLD+';font-weight:700;">FOR EXCELLENCE WE STRIVE</div>'
-    +'<div style="margin-top:5px;">Sent automatically every day at 10:00 AM Dubai while items are pending with you. <b>Age = days at the current workflow step.</b> Your full line-item list is attached.</div></td></tr></table>';
+    +'<div style="margin-top:5px;">Sent automatically every day at 10:00 AM Dubai while items are pending with you. <b>Each age is labelled by its source event.</b> Your full line-item list is attached.</div></td></tr></table>';
   const heading='Your PR / PO Action List &#8212; '+esc(p.user);
   const wrap='<!doctype html><html xmlns:o="urn:schemas-microsoft-com:office:office"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="X-UA-Compatible" content="IE=edge"><title>'+heading+'</title>'
     +'<!--[if mso]><xml><o:OfficeDocumentSettings><o:PixelsPerInch>96</o:PixelsPerInch></o:OfficeDocumentSettings></xml><![endif]-->'
@@ -501,7 +560,7 @@ function buildPersonal(p,hist){
     +'<body style="margin:0;padding:0;background:#EEF1F6;"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#EEF1F6;padding:20px 0;"><tr><td align="center">'+shell+'</td></tr></table></body></html>';
   const subject='Action needed — '+n+' PR/PO item'+(n===1?'':'s')+' pending with you ('+stamp+')';
   const xlsx='PRPO_'+p.user.replace(/[^\w.-]+/g,'_')+'_pending.xlsx';
-  return { subject, html:wrap, fil:xfil, count:n, value:totv, user:p.user, key:p.key, xlsx, sections:sectionMeta, classCounts:Object.fromEntries(classKeys.map(k=>[k,classGroups[k].length])) };
+  return { subject, html:wrap, fil:xfil, count:n, value:totv, pricedCount:pricing.priced,pricingQueueCount:pricingQueue,unvaluedOutsidePricing,sourceSharedCount:sourceShared,sharedWithOtherActiveBuyers:sharedWithOthers,priceSummaryText,oldestSummaryText,sharedSummaryText,user:p.user,key:p.key,xlsx,sections:sectionMeta,classCounts:Object.fromEntries(classKeys.map(k=>[k,classGroups[k].length])) };
 }
 async function sendPersonal(out, context){
   const from=process.env.PRPO_MAIL_FROM||process.env.MAIL_FROM;

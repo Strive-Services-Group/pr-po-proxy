@@ -17,6 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -36,11 +37,12 @@ jobs:
           npm run build --if-present
           npm run test --if-present
 
-      - name: Require authorised publish profile
-        shell: bash
-        env:
-          PUBLISH_PROFILE: ${{ secrets.AZURE_FUNCTIONAPP_PUBLISH_PROFILE_SSG_PRPO_PROXY }}
-        run: test -n "$PUBLISH_PROFILE"
+      - name: Login to Azure for ssg-prpo-proxy
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_2ABB4E6A360340E2B15C4FE614FA12FA }}
+          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_FA4AC7E0200244329CD2C296F17440C6 }}
+          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_578BC57741E045108151C85DDB76A714 }}
 
       - name: Deploy exact package to ssg-prpo-proxy
         uses: Azure/functions-action@v1
@@ -48,4 +50,3 @@ jobs:
           app-name: ssg-prpo-proxy
           slot-name: Production
           package: .
-          publish-profile: ${{ secrets.AZURE_FUNCTIONAPP_PUBLISH_PROFILE_SSG_PRPO_PROXY }}
