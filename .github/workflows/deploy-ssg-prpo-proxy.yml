@@ -27,6 +27,12 @@ jobs:
         shell: bash
         run: test "$(git rev-parse HEAD)" = "${{ inputs.source_sha }}"
 
+      - name: Bake public build identity
+        shell: bash
+        run: |
+          printf '{"commit":"%s"}\n' "${{ inputs.source_sha }}" > build-info.json
+          node -e 'const fs=require("fs"); const value=JSON.parse(fs.readFileSync("build-info.json","utf8")); if(value.commit!==process.argv[1] || !/^[0-9a-f]{40}$/.test(value.commit)) process.exit(1)' "${{ inputs.source_sha }}"
+
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -50,3 +56,22 @@ jobs:
           app-name: ssg-prpo-proxy
           slot-name: Production
           package: .
+
+      - name: Prove the running build by public output
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ inputs.source_sha }}
+          VERSION_URL: https://ssg-prpo-proxy-h4cvfegaduftedhz.uaenorth-01.azurewebsites.net/api/version
+        run: |
+          for attempt in $(seq 1 30); do
+            body="$(curl --fail --silent --show-error --max-time 20 "$VERSION_URL" || true)"
+            live_sha="$(node -e 'try { process.stdout.write(String(JSON.parse(process.argv[1]).commit || "")); } catch {}' "$body")"
+            if [ "$live_sha" = "$EXPECTED_SHA" ]; then
+              echo "Running build verified: $live_sha"
+              exit 0
+            fi
+            echo "Attempt $attempt: running build did not yet report the expected commit."
+            sleep 10
+          done
+          echo "The Function App never reported expected commit $EXPECTED_SHA." >&2
+          exit 1

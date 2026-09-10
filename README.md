@@ -6,16 +6,23 @@ Small Azure Function that reads purchase requisition (PR) and purchase order (PO
 
 ## Deploys to
 
-The authorised company target for PR/PO work is **`ssg-prpo-proxy`**. `.github/workflows/deploy-ssg-prpo-proxy.yml` is manual-only and requires the exact tested commit SHA. Waqas must set `AZURE_FUNCTIONAPP_PUBLISH_PROFILE_SSG_PRPO_PROXY`, containing the publish profile for that app. The legacy workflow is disabled and has no push trigger or deployment step.
+The authorised company target for PR/PO work is **`ssg-prpo-proxy`**. `.github/workflows/deploy-ssg-prpo-proxy.yml` is manual-only, uses Azure OIDC, and requires the exact tested commit SHA. The legacy workflow is disabled and has no push trigger or deployment step.
 
 ## Live dataset contract
 
 Correction 04 replaces the final workbook path. F&O is authoritative for PR/PO state and line amounts; the development `ssg_` capture is authoritative for approval assignments and PO stage observations. The final workbook is used once only to seed otherwise unavailable PO clocks, explicitly labelled `SEEDED_FROM_FINAL_WORKBOOK`.
 
 ## Endpoints
+- `GET /api/version` — public full commit SHA baked into the deployed package
 - `GET /api/dataset` — shared revision used by dashboard and email
 - `GET /api/pr` — PR slice of that revision
 - `GET /api/po` — PO slice of that revision
+
+The authorised deployment fails unless `/api/version` reports the exact source SHA after OneDeploy. Its response contains no setting or secret:
+
+```json
+{"commit":"0123456789abcdef0123456789abcdef01234567"}
+```
 
 Legacy out-of-scope URL (reference only; do not deploy): `https://pr-po-dashboard-proxy-b4budzexh7eveved.uaenorth-01.azurewebsites.net`
 
