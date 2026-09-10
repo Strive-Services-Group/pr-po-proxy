@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const XLSX = require('xlsx');
 const workRule = require('../work-class-rule.json');
-const { buildItems, buildDivision, buildXlsxBase64, groupByOwner, personalPool, buildPersonal, DIVS, parseXlsx, applyDeliveryPolicy, freshnessWarning, userEmailMap } = require('../src/functions/prpoEmail');
+const { buildItems, buildDivision, buildXlsxBase64, groupByOwner, personalPool, buildPersonal, DIVS, parseXlsx, applyDeliveryPolicy, freshnessWarning, fnoOwnerNames, buildPersonalMessage, buildDivisionMessage, WAQAS_ONLY_RECIPIENT } = require('../src/functions/prpoEmail');
 
 function pr(status, number) {
   return {
@@ -23,18 +23,25 @@ function pr(status, number) {
   };
 }
 
-test('temporary workbook fallback preserves the successful legacy PR population', () => {
+test('every actionable PR uses only F&O Pending Approver/User', () => {
   const items = buildItems([
-    pr('In review', 'PR-1'),
-    pr('Approved', 'PR-2'),
-    pr('Draft', 'PR-3'),
+    { ...pr('In review', 'PR-1'), 'Pending Approver/User': 'Adnan.Ullah', 'Preparer': 'invented.preparer', 'Accepted By/Assign To': 'invented.accepted' },
+    { ...pr('Approved', 'PR-2'), 'Pending Approver/User': 'roderick.red', 'Preparer': 'invented.preparer', 'Accepted By/Assign To': 'invented.accepted' },
+    { ...pr('Draft', 'PR-3'), 'Pending Approver/User': 'Aparna.Pauly', 'Preparer': 'invented.preparer', 'Accepted By/Assign To': 'invented.accepted' },
     pr('Closed', 'PR-4'),
     pr('Rejected', 'PR-5'),
     pr('Cancelled', 'PR-6'),
-    { ...pr('In review', 'PR-7'), 'Step name': 'Sourcing', 'Stage reason code': '' }
+    { ...pr('In review', 'PR-7'), 'Step name': '', 'Stage reason code': '', 'Pending Approver/User': 'Mahmud.hasan' }
   ], []);
-  assert.deepEqual(items.map(item => item.ref), ['PR-1', 'PR-2', 'PR-3']);
-  assert.ok(items.every(item => item.owner === 'dinesh.laxman'));
+  assert.deepEqual(items.map(item => item.ref), ['PR-1', 'PR-2', 'PR-3', 'PR-7']);
+  assert.deepEqual(items.map(item => item.owner), ['Adnan.Ullah', 'roderick.red', 'Aparna.Pauly', 'Mahmud.hasan']);
+  assert.ok(items.every(item => !String(item.owner).startsWith('invented.')));
+});
+
+test('F&O comma-joined owners are split and case-insensitively de-duplicated without aliases', () => {
+  assert.deepEqual(fnoOwnerNames('Adnan.Ullah, adnan.ullah, Dinesh Laxman Laxman'), ['Adnan.Ullah', 'Dinesh Laxman Laxman']);
+  const items = buildItems([{ ...pr('In review', 'PR-SHARED'), 'Pending Approver/User': 'Adnan.Ullah, adnan.ullah, roderick.red' }], []);
+  assert.deepEqual(items.map(item => item.owner), ['Adnan.Ullah', 'roderick.red']);
 });
 
 test('every Stage reason code becomes the shared plain-English class', () => {
@@ -156,14 +163,8 @@ test('PR age wording distinguishes raised date from a distinct step date', () =>
 });
 
 test('shared item names other active buyers and excludes an inactive username', () => {
-  const row = { ...pr('In review', 'PR-SHARED-ACTIVE'), 'Stage reason code': 'ACTIVE_LINES_NOT_FULLY_PRICED', 'Pending Approver/User': 'Adnan.Ullah' };
-  const rows = [row];
-  Object.defineProperty(rows, 'routingMetadata', { value: [
-    { 'Purchase requisition': 'PR-SHARED-ACTIVE', 'Source holder': 'Adnan.Ullah' },
-    { 'Purchase requisition': 'PR-SHARED-ACTIVE', 'Source holder': 'Layusha.cleatus' },
-    { 'Purchase requisition': 'PR-SHARED-ACTIVE', 'Source holder': 'roderick.red' }
-  ] });
-  const item = buildItems(rows, [])[0];
+  const row = { ...pr('In review', 'PR-SHARED-ACTIVE'), 'Stage reason code': 'ACTIVE_LINES_NOT_FULLY_PRICED', 'Pending Approver/User': 'Adnan.Ullah, Layusha.cleatus, roderick.red' };
+  const item = buildItems([row], [])[0];
   assert.equal(item.sourceShared, true);
   assert.deepEqual(item.otherLiveBuyers, ['roderick.red']);
   assert.doesNotMatch(item.sharedLabel, /Layusha/i);
@@ -173,27 +174,35 @@ test('shared item names other active buyers and excludes an inactive username', 
   assert.match(out.html, /Shared with roderick\.red/);
 });
 
-test('inactive, unaddressed and addressed holders have one delivery route', () => {
+test('every F&O-named holder remains a personal test-channel population', () => {
   const rows = [
     { ...pr('In review', 'PR-INACTIVE'), 'Pending Approver/User': 'Layusha.cleatus', 'Department': 'Procurement', 'Stage reason code': 'ACTIVE_LINES_NOT_FULLY_PRICED' },
     { ...pr('In review', 'PR-NO-EMAIL'), 'Pending Approver/User': 'Sirinikhil', 'Department': 'Housekeeping Services', 'Stage reason code': 'UNMAPPED_ELEMENT' },
     { ...pr('In review', 'PR-ZAHEER'), 'Pending Approver/User': 'Zaheer Ahmed Ameer', 'Department': 'Accomodation Services', 'Stage reason code': 'UNMAPPED_ELEMENT' }
   ];
   const items = applyDeliveryPolicy(buildItems(rows, []));
-  assert.equal(items[0].deliveryIssue, 'no active owner');
-  assert.equal(items[0].noNamedOwner, true);
-  assert.equal(items[1].deliveryIssue, 'no email address on file');
-  assert.equal(items[1].noNamedOwner, true);
-  assert.equal(items[2].deliveryIssue, undefined);
-  assert.equal(userEmailMap()['zaheer.ahmed'], 'Zaheer.Ahmed@domus-housing.com');
-  assert.deepEqual(groupByOwner(personalPool(items)).map(p=>p.user), ['Zaheer.Ahmed']);
+  assert.ok(items.every(item => item.deliveryIssue === undefined));
+  assert.ok(items.every(item => item.noNamedOwner === false));
+  assert.deepEqual(groupByOwner(personalPool(items)).map(p=>p.user), ['Layusha.cleatus', 'Sirinikhil', 'Zaheer Ahmed Ameer']);
   const procurement = buildDivision(DIVS.find(d=>d.key==='procurement'), items, {});
-  assert.match(procurement.html, /Layusha\.cleatus/);
-  assert.match(procurement.html, /no active owner/);
-  assert.match(procurement.html, /Sirinikhil/);
-  assert.match(procurement.html, /no email address on file/);
+  assert.doesNotMatch(procurement.html, /no active owner/);
+  assert.doesNotMatch(procurement.html, /no email address on file/);
   assert.doesNotMatch(procurement.html, /PR-ZAHEER/);
-  assert.equal(personalPool(items).length + items.filter(it=>it.doc==='PR'&&it.noNamedOwner).length, 3);
+  assert.equal(personalPool(items).length, 3);
+});
+
+test('every personal and team message is hard-guarded to Waqas only', async () => {
+  const personal = buildPersonal(groupByOwner(personalPool(buildItems([{ ...pr('In review', 'PR-GUARD'), 'Pending Approver/User': 'Adnan.Ullah' }], [])))[0], {});
+  const messages = [await buildPersonalMessage(personal)];
+  for (const cfg of DIVS) messages.push(buildDivisionMessage({ cfg, subject: 'Team list', html: '<p>Preview</p>' }, 'test-attachment'));
+  for (const message of messages) {
+    assert.deepEqual(message.toRecipients, [{ emailAddress: { address: WAQAS_ONLY_RECIPIENT } }]);
+    assert.equal(Object.hasOwn(message, 'ccRecipients'), false);
+    assert.equal(Object.hasOwn(message, 'bccRecipients'), false);
+    assert.match(message.subject, /^\[FOR .+\] /);
+    const addresses = JSON.stringify(message).match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) || [];
+    assert.deepEqual([...new Set(addresses.map(address => address.toLowerCase()))], [WAQAS_ONLY_RECIPIENT]);
+  }
 });
 
 test('stale warning appears after six hours and stays absent when fresh', () => {

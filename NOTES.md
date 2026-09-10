@@ -55,3 +55,62 @@
 
 - Chandan's separate production sender will continue using its own old template until its owner updates or retires it. This repository explicitly forbids changing that system.
 - Keep the deployment workflow as the only authorised `ssg-prpo-proxy` publisher. Treat `/api/version`, not an Azure green tick, as release proof.
+
+# 10 September 2026 F&O owner-of-record and Waqas-only sender guard
+
+## Source trace and assumptions
+
+- Canonical proxy checkout was clean `main` at `b8119a71bc32dd97e121ac733769e23decb140b7`, equal to `origin/main`, before this change.
+- The production `/api/dataset` route is unchanged. One HTTP 200 live snapshot was saved outside both repositories at `C:\Windows\Temp\prpo-fno-owner-20260910-0705.json`; every reconciliation and preview in this change uses that file only.
+- Snapshot revision `a80bb2da0eb478efa17f19fd9c3d2a343af476a3ab0e182f9206a9d000109bce`, generated `2026-09-10T07:23:53.999Z`, contains 4,445 PR rows and 3,216 PO rows.
+- "F&O owner" means the exact nonblank token in `Pending Approver/User`. Comma-joined values are split, trimmed and case-insensitively de-duplicated within each document. No department reassignment, preparer, accepted/assigned field, email-address map or name alias supplies ownership.
+- Purely numeric or blank values do not name a person and remain in the explicit no-named-owner path. The saved revision contains 109 actionable PR documents with no named owner and no numeric pending-owner token.
+- Legacy `pr.xlsx`, `po.xlsx`, their generator and Chandan's sender are a separate protected delivery path. They were not changed or regenerated.
+
+## Exact implementation
+
+- `loadItems()` now reads the live `/api/dataset` response directly and refuses a non-LIVE or malformed response. It no longer reads GitHub Pages workbooks or their state file.
+- All Draft, In review and Approved requisitions are included. Each named F&O pending owner receives one attribution; a shared F&O field produces one attribution per de-duplicated name.
+- Priced items keep their existing class, ageing, price and queue wording, but ownership is no longer reassigned to a department operations person. Draft and Approved items no longer substitute Preparer or Accepted By/Assign To.
+- Inactive or unmapped-address names remain F&O owners because this Function App no longer delivers to their address. Blank F&O ownership alone enters the no-named-owner team list.
+- Personal and division Graph message builders hard-code `w.amjad@striveservicesgroup.com` as the only To address, never create Cc/Bcc, and prefix each subject with `[FOR <F&O person or team>]`. No environment recipient setting or `PRPO_PERSONAL_TEST` branch can bypass the guard.
+- The send-from lookup and Graph authentication path were not changed. No send request was made.
+
+## Live F&O reconciliation
+
+| person | F&O count | our PR count | difference |
+|---|---:|---:|---:|
+| Adnan.Ullah | 428 | 428 | 0 |
+| roderick.red | 307 | 307 | 0 |
+| Layusha.cleatus | 140 | 140 | 0 |
+| Aparna.Pauly | 133 | 133 | 0 |
+| arman.b | 10 | 10 | 0 |
+| Judhin.prabhakar | 3 | 3 | 0 |
+| Mahmud.hasan | 2 | 2 | 0 |
+| Mohammad.w | 2 | 2 | 0 |
+| Dan.roberts | 1 | 1 | 0 |
+| Ernie.Lavalle | 1 | 1 | 0 |
+| Firas.altamimi | 1 | 1 | 0 |
+| Muhammad.faisal | 1 | 1 | 0 |
+| Nathan.Buys | 1 | 1 | 0 |
+| ruben.senesan | 1 | 1 | 0 |
+
+The comparison covers 954 actionable PR documents. Every named-owner difference is zero, and our output has no person absent from F&O.
+
+## Commands, tests and previews
+
+- `git status --short --branch`, `git rev-parse HEAD` and `git ls-remote origin refs/heads/main` proved the starting branch and remote equality.
+- One cache-busted `Invoke-WebRequest` fetched `/api/dataset`; no second live dataset fetch was used for verification.
+- `node --check src/functions/prpoEmail.js`, `npm test` and `git diff --check` passed. Final proxy result before commit: 26/26 tests.
+- The first test run had one fixture failure because an analytical division renderer was given an empty list. The recipient test was corrected to exercise all four pure team-message builders directly; no production logic was weakened.
+- `node tests/reconcile_fno_owner_counts.js <saved revision> <proxy repo>` proved F&O, Function sender and dashboard counts from independent paths.
+- No-send HTML previews were rendered outside the repositories: `C:\Windows\Temp\prpo-adnan-fno-waqas-only.html` (990,987 bytes) and `C:\Windows\Temp\prpo-procurement-fno-waqas-only.html` (93,222 bytes).
+- Adnan preview subject: `[FOR Adnan.Ullah] Action needed — 428 PR/PO items pending with you (10 Sept 2026)`. The team subject begins `[FOR procurement team]`. Both message objects contain only Waqas in To and have empty Cc/Bcc.
+
+## Protected state
+
+- No app setting, secret, token, Graph permission, `PRPO_PERSONAL_TEST`, send-from setting or 06:00 UTC timer changed or was printed.
+- A read-only Azure check confirmed the authorised target name `ssg-prpo-proxy` and listed setting names only: 17 names, with `PRPO_PERSONAL_TEST`, `MAIL_FROM` and `PRPO_MAIL_FROM` absent. No value was requested or displayed.
+- No Dataverse write and no `/api/dataset` code change occurred.
+- Chandan's sender, flow, OneDrive, tokens and recipients were not touched.
+- No email was sent.

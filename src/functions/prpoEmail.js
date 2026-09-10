@@ -1,31 +1,18 @@
 /*
- * PR / PO PIPELINE — FOUR DIVISION EMAILS, sent daily 10:00 AM Dubai.
+ * PR / PO PIPELINE — Waqas-only production test channel, scheduled 10:00 AM Dubai.
  *
- * TIMER 0 0 6 * * * (06:00 UTC = 10:00 AM Dubai). SEND MODEL (2026-08-11b per CK — personal-first):
- *   1. PERSONAL action emails -> one PER PERSON with pending items (ops + finance + procurement members;
- *      any stage except Director/CEO/Sent-to-Supplier/Pending-Invoicing). Line manager CC'd (USER_MANAGER).
+ * TIMER 0 0 6 * * 1-5 (06:00 UTC = 10:00 AM Dubai). SEND MODEL:
+ *   1. PERSONAL action emails -> one per F&O Pending Approver/User with pending items.
  *      Ops-confirm split "Pending Internal" vs "Pending Client" ('Unit prices updated in PR lines' = with
- *      client): client items in cards + attached Excel ONLY, not the body table. D365CRM/IT-Dep folded into
- *      it.solutions. Addresses come from user-email-addresses.json (env PRPO_USER_EMAILS JSON overrides).
- *   2. Suppliers & Open Orders email -> Mohamed Ashraf (PRPO_PROC_MAIL_TO overrides the default):
+ *      client): client items in cards + attached Excel ONLY, not the body table.
+ *   2. Suppliers & Open Orders team list:
  *      Sent-to-Supplier POs + Confirmed POs with 'Open order' status (the stale-approver ones).
- *   3. Pending Invoicing email -> Mustajab + Meha + Clita by default (PRPO_INV_MAIL_TO overrides).
- *   REMOVED COMPLETELY per CK: Finance Director & CEO items, and unassigned/settled leftovers — they appear
- *   in NO email. The old finance/ops_hm/ops_all division emails are gone/retired (ops kept preview-only).
+ *   3. Pending Invoicing team list. The old finance/ops_hm/ops_all division emails remain preview-only.
  *
  * Optional: division-scoped emails (produce four separate emails with scoped analysis + Excel attachments).
- * These are available as explicit/preview sends (ops_* remain preview-only) and use the dashboard live-pipeline logic:
- *   1. Procurement          -> PRPO_PROC_MAIL_TO     (PR Procurement + PO Procurement + PO Sent to Supplier)
- *   2. Finance              -> PRPO_FIN_MAIL_TO      (PR Finance/Director + PO Finance/Pending Invoicing)
- *   3. Operations HM+FitOut -> PRPO_OPSHM_MAIL_TO    (Ops to Confirm + Dep Managers, Home Maintenance + FitOut)
- *   4. Operations All       -> PRPO_OPSALL_MAIL_TO   (Ops to Confirm + Dep Managers, all other departments)
- * A division with no recipient env set is skipped. All counts use the dashboard live-pipeline logic.
- *
- * PERSONAL email addressing: repository USER_EMAIL map, overridden/merged by env PRPO_USER_EMAILS (JSON
- *   {"dinesh.laxman":"a@x.com", ...}, keys case-insensitive). Unaddressable work is shown in procurement.
- * TEST MODE (default ON): PRPO_PERSONAL_TEST != '0' -> every personal email goes to PRPO_TEST_MAIL_TO
- *   (subject prefixed "[TEST · for <user>]"); if PRPO_TEST_MAIL_TO unset nothing personal is sent. Set
- *   PRPO_PERSONAL_TEST=0 to go live. Optional PRPO_PERSONAL_CC added to every live personal email.
+ * These use the dashboard live-pipeline logic. Any actual Graph message is addressed in code to Waqas only,
+ * has no Cc/Bcc, and identifies the intended person/team in a [FOR ...] subject prefix. Environment recipient
+ * settings and PRPO_PERSONAL_TEST cannot override this guard.
  *
  * HTTP test endpoints (authLevel: function, add &code=<your default host key>):
  *   ?division=procurement|finance|ops_hm|ops_all & format=html|debug=1|send=1   -> that division (ops_* preview-only)
@@ -34,22 +21,17 @@
  *   ?send=1                                                                     -> send everything (divisions + personal)
  *   (no params)                                                                 -> JSON summary (no send)
  *
- * Env: TENANT_ID, CLIENT_ID, CLIENT_SECRET, MAIL_FROM (existing) + PRPO_PROC_MAIL_TO, PRPO_FIN_MAIL_TO.
- * Optional: PRPO_MAIL_FROM, PRPO_PR_URL, PRPO_PO_URL, PRPO_DASH_URL, PRPO_USER_EMAILS, PRPO_PERSONAL_TEST,
- *           PRPO_TEST_MAIL_TO, PRPO_PERSONAL_CC.
+ * Env: TENANT_ID, CLIENT_ID, CLIENT_SECRET, MAIL_FROM. Optional PRPO_MAIL_FROM and PRPO_DASH_URL.
  */
 const { app } = require('@azure/functions');
 const XLSX = require('xlsx');
 const ExcelJS = require('exceljs');
 const WORK_CLASS_RULE = require('../../work-class-rule.json');
-const USER_EMAIL = require('../../user-email-addresses.json');
 const INACTIVE_USERNAMES = new Set(require('../../inactive-usernames.json').inactiveUsernames.map(v=>String(v).trim().toLowerCase().replace(/\s+/g,' ')));
 
-const PR_URL = process.env.PRPO_PR_URL || 'https://strive-services-group.github.io/PR-PO-Pipeline-Dashboard/pr.xlsx';
-const PO_URL = process.env.PRPO_PO_URL || 'https://strive-services-group.github.io/PR-PO-Pipeline-Dashboard/po.xlsx';
 const DASH   = process.env.PRPO_DASH_URL || 'https://strive-services-group.github.io/PR-PO-Pipeline-Dashboard/';
-const WORKBOOK_STATE_URL = new URL('legacy-email-workbook-state.json', DASH).toString();
 const DATASET_URL = process.env.PRPO_DATASET_URL || 'https://ssg-prpo-proxy-h4cvfegaduftedhz.uaenorth-01.azurewebsites.net/api/dataset';
+const WAQAS_ONLY_RECIPIENT = 'w.amjad@striveservicesgroup.com';
 const FONT = 'Aptos,Segoe UI,Arial,sans-serif', NAVY = '#14315E', RED = '#dc2626', TEAL = '#0f766e', W = 1000;
 
 const PR_MAP = {"Handyman Services_Manager":"Dep Managers","Building Services_Asst. Facility Managers 1":"Dep Managers","PurchReqReviewTask":"PR In Review","Procurement sends inquiry/RFQ to suppliers":"RFQ to suppliers","Quotation received and logged/attached":"Qt received & Logged","Quotation shared to Operations for confirmation":"Qt Shared to Op","Operations confirms material/scope":"OP confirms material","Unit prices updated in PR lines":"Unit Price Updated","Building Services_Asst. Facility Managers 2":"Dep Managers","Building Services_Facilities Manager":"Dep Managers","PAC Services_Manager":"Dep Managers","Concierge Services_Manager":"Dep Managers","Security Services_Manager":"Dep Managers","Home Services_Operations Manager":"Dep Managers","Landscaping_Manager":"Dep Managers","Finance & Accounts_Accounting Manager":"Finance","Facilities Management_Director":"Director","Commercial_Director":"Director","Executive Management_CEO":"CEO"};
@@ -78,7 +60,7 @@ function parseXlsx(buf){
   Object.defineProperty(rows,'routingMetadata',{value:metadata,enumerable:false});
   return rows;
 }
-function prLive(r){ const st=_norm(r['Status']); return ['draft','in review','approved'].includes(st) && (!!String(r['Stage reason code']||'').trim() || !!PR_MAP[r['Step name']]); }
+function prLive(r){ const st=_norm(r['Status']); return ['draft','in review','approved'].includes(st); }
 function poBucket(r){ const live=String(r['Live stage']||r['Step name']||''); const appr=String(r['Approval status']||''); const pos=String(r['Purchase order status']||''); let b=PO_MAP[r['Step name']]||null; if(['Procurement','Finance','Director','CEO'].includes(live)) b=live; if(live==='Approval — unmapped element'||live==='Not yet sent') b='Procurement'; if(live==='Sent to supplier') b='Sent to Supplier'; if(live==='Receipt posted') b='Pending Invoicing'; if(live==='Invoiced') return null; if(appr==='Rejected'||pos==='Canceled'||pos==='Cancelled'||pos==='Closed'||pos==='Invoiced'||!b) return null; return b; }
 function sameMoment(a,b){ const da=xd(a),db=xd(b); return !!(da&&db&&Math.abs(da.getTime()-db.getTime())<1000); }
 function prClock(r){
@@ -98,18 +80,24 @@ const _UN={}; for(const k in USER_DEPT){ _UN[_norm(k)]=USER_DEPT[k]; }
 function deptForUser(u){ return _UN[_norm(u)]||''; }
 const DEPT_DIV={'Procurement':'procurement','Accounts & Tax':'finance','Home Maintenance Services':'ops_hm','FitOut Services':'ops_hm'};
 function divForDept(d){ return DEPT_DIV[d]||'ops_all'; }
-// Ops-confirm steps: the person who must act is the requisition department's operations confirmer,
-// NOT the procurement approver sitting in the F&O user columns. Map requisition department -> responsible ops user.
-const DEPT_OPSUSER={"Building Services":"dinesh.laxman","Landscaping Services":"dinesh.laxman","Contracted Cleaning Services":"Gokul.Krishna","Security Services":"pramod.c","FitOut Services":"Shakir Ameer Bakhsh","Home Maintenance Services":"shijil.c"};
-function opsUserForDept(d){ return DEPT_OPSUSER[String(d==null?'':d).trim()]||''; }
 // The F&O step name is unreliable for the finance chain, so the Finance/Director/CEO bucket is reconstructed from
 // WHO holds the item. roleOf: Accounts & Tax approver -> 'Finance' (ayman.g -> 'Director', Patrick.Smith -> 'CEO'),
 // procurement user -> 'Procurement', anyone else (operations) -> '' (falls through to the operations split).
 function roleOf(u){ const d=deptForUser(u), ul=_norm(u); if(d==='Accounts & Tax'){ if(ul==='ayman.g') return 'Director'; if(ul==='patrick.smith') return 'CEO'; return 'Finance'; } if(d==='Procurement') return 'Procurement'; return ''; }
 function opsDivFor(reqdept){ return (reqdept==='Home Maintenance Services'||reqdept==='FitOut Services')?'ops_hm':'ops_all'; }
-function prPendingWith(r){ const st=String(r['Status']||''); if(st==='Draft') return String(r['Preparer']||'').trim(); if(st==='Approved') return String(r['Accepted By/Assign To']||'').trim(); return String(r['Pending Approver/User']||'').trim(); }
+function prPendingWith(r){ return String(r['Pending Approver/User']||'').trim(); }
 const NO_NAMED_OWNER='No named owner';
 function isNoNamedOwner(value){ const v=_norm(value); return !v||v==='(unassigned)'||v==='not recorded'||v.startsWith('no named owner')||v.startsWith('employee number '); }
+function fnoOwnerNames(value){
+  const named=[], unresolved=[], seen=new Set();
+  for(const part of String(value==null?'':value).split(',')){
+    const raw=part.trim(); if(!raw)continue;
+    const key=_norm(raw); if(seen.has(key))continue; seen.add(key);
+    if(/^\d+$/.test(raw))unresolved.push(NO_NAMED_OWNER+' — F&O Pending Approver/User is employee number '+raw);
+    else named.push(raw);
+  }
+  return named.length?named:unresolved;
+}
 function ageBand(days){ if(days==null)return 'Age not recorded'; if(days<=7)return '0–7'; if(days<=30)return '8–30'; if(days<=60)return '31–60'; if(days<=90)return '61–90'; return 'Over 90'; }
 function ageBandLabel(it){ return (it.clockBasis==='raised'?'Raised':'Current step')+' · '+it.ageBand; }
 function legacyClassCode(step){
@@ -135,9 +123,9 @@ function routingMetadataMap(rows){
   }
   return out;
 }
-function sharedBuyerState(ref,owner,workCode,metadata){
+function sharedBuyerState(sourceOwners,owner,workCode){
   if(workCode!=='ACTIVE_LINES_NOT_FULLY_PRICED')return {sourceShared:false,otherLiveBuyers:[],label:''};
-  const source=(metadata.get(String(ref||'').trim().toUpperCase())||[]).map(canonOwner);
+  const source=(sourceOwners||[]).map(canonOwner);
   const unique=[]; for(const name of source){const key=_norm(name);if(!unique.some(v=>_norm(v)===key))unique.push(name);}
   if(unique.length<2)return {sourceShared:false,otherLiveBuyers:[],label:''};
   const current=_norm(canonOwner(owner));
@@ -169,12 +157,9 @@ function _unused_itemDivision(it){
 const STAGE_ORDER=[['PR','Re-Assigned/Rejected'],['PR','Procurement'],['PR','Operations to Confirm'],['PR','Step not reported by F&O'],['PR','Dep Managers'],['PR','Finance'],['PR','Director'],['PR','CEO'],['PO','Procurement'],['PO','Finance'],['PO','Director'],['PO','CEO'],['PO','Confirmed Open Order'],['PO','Sent to Supplier'],['PO','Pending Invoicing']];
 
 function buildItems(prRows, poRows){
-  const items=[], sharedMeta=routingMetadataMap(prRows);
-  for(const r of prRows){ if(!prLive(r)) continue; const work=workClassFor(r); const hb=work.rule.headerBucket||'Step not reported by F&O'; const rowdept=String(r['Department']||'').trim(); const pw0=prPendingWith(r); const inrev=(String(r['Status']||'').trim()==='In review');
-    // New workbooks already carry the shared holder decision in the three compatibility
-    // columns. Keep the legacy operations lookup only while an older workbook is in flight.
-    const owner=((!work.fromWorkbook&&work.code==='ACTIVE_LINES_PRICED'?(opsUserForDept(rowdept)||pw0):pw0)||'(unassigned)');
-    const noNamedOwner=isNoNamedOwner(owner);
+  const items=[];
+  for(const r of prRows){ if(!prLive(r)) continue; const work=workClassFor(r); const hb=work.rule.headerBucket||'Step not reported by F&O'; const rowdept=String(r['Department']||'').trim(); const sourceOwners=fnoOwnerNames(prPendingWith(r)); const owners=sourceOwners.length?sourceOwners:[NO_NAMED_OWNER+' — Pending Approver/User not recorded in F&O']; const inrev=(String(r['Status']||'').trim()==='In review');
+   for(const owner of owners){ const noNamedOwner=isNoNamedOwner(owner);
     // "All game is with the pending approver": route by roleOf(owner). Where the step's home disagrees with the
     // approver (a bounced-back item) AND the PR is still In review, it lands in the "Re-Assigned/Rejected" bucket of
     // the approver's email (Draft/Approved bounce-candidates are NOT flagged — they take the normal bucket):
@@ -187,17 +172,18 @@ function buildItems(prRows, poRows){
     else if(rl==='Finance'||rl==='Director'||rl==='CEO'){ stage=rl; div='finance'; }
     else if(rl==='Procurement'){ div='procurement'; stage=(hb==='Operations to Confirm'&&inrev)?'Re-Assigned/Rejected':'Procurement'; }
     else { div=opsDivFor(rowdept); stage=(hb==='Procurement'&&inrev)?'Re-Assigned/Rejected':(hb==='Operations to Confirm')?'Operations to Confirm':'Dep Managers'; }
-    const clock=prClock(r), shared=sharedBuyerState(r['Purchase requisition'],owner,work.code,sharedMeta);
-    items.push({ref:r['Purchase requisition'],doc:'PR',typ:String(r['Purchase requisition']||'').startsWith('CPR')?'CPR':'PR',stage:stage,div:div,age:clock.age,ageBand:ageBand(clock.age),clockBasis:clock.basis,clockLabel:clock.label,owner:owner,dept:rowdept,value:amt(r),hasRecordedValue:hasRecordedValue(r),vendor:'',ppend:true,noNamedOwner,workClassCode:work.code,workClass:work.label,workAction:work.action,classOrder:work.order,sourceShared:shared.sourceShared,otherLiveBuyers:shared.otherLiveBuyers,sharedLabel:shared.label,raw:r}); }
-  // PO: owner + "genuinely pending a person?" flag (In review -> Pending Approver/User, Draft -> Created by; Confirmed/Approved not pending).
+    const clock=prClock(r), shared=sharedBuyerState(sourceOwners,owner,work.code);
+    items.push({ref:r['Purchase requisition'],doc:'PR',typ:String(r['Purchase requisition']||'').startsWith('CPR')?'CPR':'PR',stage:stage,div:div,age:clock.age,ageBand:ageBand(clock.age),clockBasis:clock.basis,clockLabel:clock.label,owner:owner,dept:rowdept,value:amt(r),hasRecordedValue:hasRecordedValue(r),vendor:'',ppend:true,noNamedOwner,workClassCode:work.code,workClass:work.label,workAction:work.action,classOrder:work.order,sourceShared:shared.sourceShared,otherLiveBuyers:shared.otherLiveBuyers,sharedLabel:shared.label,raw:r}); }}
+  // PO: Pending Approver/User is the only person-of-record; vendor lifecycle stages are not personal queues.
   // Vendor stages (Sent-to-Supplier/Pending-Invoicing) route by bucket; every other PO's bucket+division is reconstructed from the holder's role.
-  for(const r of poRows){ const bk=poBucket(r); if(!bk) continue; const ven=String(r['Vendor name']||'-').trim(); const poStat=String(r['Approval status']||''); const createdBy=String(r['Created by']||r['Created By']||'').trim(); const poPend=String(r['Pending Approver/User']||'').trim(); const isVenBk=(bk==='Sent to Supplier'||bk==='Pending Invoicing'); let own,ppend; if(isVenBk){ own=ven; ppend=false; } else if(poStat==='In review'){ own=poPend||'(unassigned)'; ppend=true; } else if(poStat==='Draft'){ own=createdBy||'(unassigned)'; ppend=true; } else { own=poPend||'(unassigned)'; ppend=false; }
+  for(const r of poRows){ const bk=poBucket(r); if(!bk) continue; const ven=String(r['Vendor name']||'-').trim(); const poStat=String(r['Approval status']||''); const poPend=fnoOwnerNames(r['Pending Approver/User']); const isVenBk=(bk==='Sent to Supplier'||bk==='Pending Invoicing'); const owners=isVenBk?[ven]:(poPend.length?poPend:[NO_NAMED_OWNER+' — Pending Approver/User not recorded in F&O']); const ppend=!isVenBk;
+   for(const own of owners){
     let stage,div;
     if(bk==='Sent to Supplier'){ stage=bk; div='procurement'; }
     else if(bk==='Pending Invoicing'){ stage=bk; div='finance'; }
     else { const rl=roleOf(own); if(rl==='Finance'||rl==='Director'||rl==='CEO'){ stage=rl; div='finance'; } else if(rl==='Procurement'){ stage='Procurement'; div='procurement'; } else { stage='Procurement'; div='procurement'; } }
     const age=poAge(r);
-    items.push({ref:r['Purchase order'],doc:'PO',typ:'PO',stage:stage,div:div,age,ageBand:ageBand(age),clockBasis:'current step',clockLabel:'at current step for '+age+' days',owner:own,dept:String(r['Department']||'').trim(),value:amt(r),hasRecordedValue:hasRecordedValue(r),vendor:ven,ppend:ppend,noNamedOwner:false,workClassCode:String(r['Stage reason code']||''),workClass:'Purchase order action',workAction:'Complete the current purchase-order step.',classOrder:100,sourceShared:false,otherLiveBuyers:[],sharedLabel:'',raw:r}); }
+    items.push({ref:r['Purchase order'],doc:'PO',typ:'PO',stage:stage,div:div,age,ageBand:ageBand(age),clockBasis:'current step',clockLabel:'at current step for '+age+' days',owner:own,dept:String(r['Department']||'').trim(),value:amt(r),hasRecordedValue:hasRecordedValue(r),vendor:ven,ppend:ppend,noNamedOwner:isNoNamedOwner(own),workClassCode:String(r['Stage reason code']||''),workClass:'Purchase order action',workAction:'Complete the current purchase-order step.',classOrder:100,sourceShared:false,otherLiveBuyers:[],sharedLabel:'',raw:r}); }}
   return items;
 }
 
@@ -302,20 +288,20 @@ function f_noNamedOwner(its,L,col){
 
 /* ---- divisions ---- */
 const DIVS = [
- {key:'procurement', mail:'PRPO_SUPPLIERS_MAIL_TO', defaultTo:'mohamed.ashraf@striveservicesgroup.com', xlsx:'PRPO_Suppliers_OpenOrders_list.xlsx', title:'Suppliers, Open Orders &amp; Unowned PRs',
+ {key:'procurement', xlsx:'PRPO_Suppliers_OpenOrders_list.xlsx', title:'Suppliers, Open Orders &amp; Unowned PRs',
   heading:'PR / PO Pipeline &#8212; Suppliers, Open Orders &amp; Unowned PRs', sub:'Supplier-side POs plus requisitions that have no named owner &#183; member queues arrive as individual action emails', accent:'#a855f7',
   pr:[], po:['Confirmed Open Order','Sent to Supplier'], restage:'Confirmed Open Order',
   match:it=>(it.doc==='PR'&&it.noNamedOwner)||(it.doc==='PO'&&(it.stage==='Sent to Supplier'||(it.ppend===false&&String(it.raw['Approval status']||'')==='Confirmed'&&String(it.raw['Purchase order status']||'')==='Open order'))),
   findings:[f=>f_noNamedOwner(f,'A','#dc2626'), f=>f_vendor(f,'Sent to Supplier','B','#a855f7','Sent to Supplier &#8212; awaiting delivery / GRN','Chase the suppliers below for delivery, then move to invoicing.'), f=>f_value(f,'C','#2563eb'), f=>f_oldest(f,'D','#dc2626'), f=>f_sla(f,'E','#e11d48')]},
- {key:'invoicing', mail:'PRPO_INV_MAIL_TO', defaultTo:'muhammad.mustajab@striveservicesgroup.com;mehawil@striveservicesgroup.com;clita.m@striveservicesgroup.com', cc:'ayman.ismail@striveservicesgroup.com;mohamed.ashraf@striveservicesgroup.com', xlsx:'PRPO_PendingInvoicing_list.xlsx', title:'Pending Invoicing',
+ {key:'invoicing', xlsx:'PRPO_PendingInvoicing_list.xlsx', title:'Pending Invoicing',
   heading:'PR / PO Pipeline &#8212; Pending Invoicing', sub:'POs confirmed &amp; received &#8212; awaiting supplier invoice posting by Accounts', accent:'#f97316',
   pr:[], po:['Pending Invoicing'], match:it=>it.stage==='Pending Invoicing',
   findings:[f=>f_vendor(f,'Pending Invoicing','A','#f97316','Pending Invoicing &#8212; by vendor','Post the supplier invoices below to clear these from the ledger.'), f=>f_value(f,'B','#2563eb'), f=>f_oldest(f,'C','#dc2626')]},
- {key:'ops_hm', send:false, mail:'PRPO_OPSHM_MAIL_TO', xlsx:'PRPO_Operations_HomeMaint_FitOut_list.xlsx', title:'Operations &#183; Home Maintenance + FitOut',
+ {key:'ops_hm', send:false, xlsx:'PRPO_Operations_HomeMaint_FitOut_list.xlsx', title:'Operations &#183; Home Maintenance + FitOut',
   heading:'PR / PO Pipeline &#8212; Operations (Home Maintenance &amp; FitOut)', sub:'Operations-to-confirm &amp; dep-manager PRs whose requisition department is Home Maintenance or FitOut', accent:'#14b8a6',
   pr:['Operations to Confirm','Dep Managers'], po:[], depts:new Set(['Home Maintenance Services','FitOut Services']),
   findings:[f=>f_owners(f,'A','#14b8a6','Pending with &#8212; Home Maintenance &amp; FitOut queue'), f=>f_value(f,'B','#2563eb'), f=>f_oldest(f,'C','#dc2626'), f=>f_sla(f,'D','#e11d48')]},
- {key:'ops_all', send:false, mail:'PRPO_OPSALL_MAIL_TO', xlsx:'PRPO_Operations_AllDepts_list.xlsx', title:'Operations &#183; All Departments',
+ {key:'ops_all', send:false, xlsx:'PRPO_Operations_AllDepts_list.xlsx', title:'Operations &#183; All Departments',
   heading:'PR / PO Pipeline &#8212; Operations (All Departments)', sub:'Operations-to-confirm &amp; dep-manager PRs for all other requisition departments (Building Services, Contracted Cleaning, Landscaping, etc.)', accent:'#8b5cf6',
   pr:['Operations to Confirm','Dep Managers'], po:[], xdepts:new Set(['Home Maintenance Services','FitOut Services']),
   findings:[f=>f_owners(f,'A','#8b5cf6','Pending with &#8212; who is holding the queue'), f=>f_dept(f,'B','#4f46e5'), f=>f_value(f,'C','#2563eb'), f=>f_oldest(f,'D','#dc2626'), f=>f_sla(f,'E','#e11d48')]},
@@ -421,47 +407,15 @@ function buildDivision(cfg, items, hist){
   return { subject, html:wrap, fil, count:tot, value:totv, cfg };
 }
 
-/* ---- PERSONAL action emails: one per pending ops / finance member ----
- * Pool = genuinely-pending items in the finance / ops divisions, EXCLUDING Director+CEO stages (leadership
- * stays in the Finance division email) and vendor stages. Procurement division untouched. */
-// CK-supplied mapping (2026-08-11 role table), mirrored to the workbook generator.
-// Line manager (CC on the personal email) per CK's role table. Keyed by F&O username.
-const USER_MANAGER={
-  "dinesh.laxman":"mohammad.w@sahalahfm.com",
-  "arman.b":"ayman.ismail@striveservicesgroup.com",
-  "muhammad.mustajab":"ayman.ismail@striveservicesgroup.com",
-  "Shakir Ameer Bakhsh":"nasser.saman@candoo.ae",
-  "shijil.c":"daniel.allen@striveservicesgroup.com",
-  "it.solutions":"shehzad.jehangir@striveservicesgroup.com",
-  "Gokul.Krishna":"judhin.prabhakar@sahalahfm.com,lijo.p@sahalahfm.com", // PAC Approver -> CC PAC Managers (Judhin + Lijo)
-  "roderick.red":"mohamed.ashraf@striveservicesgroup.com,riyaz.n@striveservicesgroup.com",
-  "Adnan.Ullah":"mohamed.ashraf@striveservicesgroup.com,riyaz.n@striveservicesgroup.com",
-  "Aparna.Pauly":"mohamed.ashraf@striveservicesgroup.com,riyaz.n@striveservicesgroup.com",
-  "Layusha.cleatus":"mohamed.ashraf@striveservicesgroup.com",
-  "Riyaz.n":"mohamed.ashraf@striveservicesgroup.com",
-  "pramod.c":"abdul.muqeet@sahalahfm.com",
-  // Department managers report to the Operation Director:
-  "teena.k":"nathan.buys@striveservicesgroup.com",
-  "Abdul.Muqeet":"nathan.buys@striveservicesgroup.com",
-  "Judhin.prabhakar":"nathan.buys@striveservicesgroup.com",
-  "Mohammad.w":"nathan.buys@striveservicesgroup.com"
-};
-const _MGR={}; for(const k in USER_MANAGER) _MGR[_norm(k)]=USER_MANAGER[k];
-function managerFor(key){ return _MGR[key]||''; }
-function userEmailMap(){ const m={}; for(const k in USER_EMAIL) m[_norm(k)]=USER_EMAIL[k]; try{ const j=JSON.parse(process.env.PRPO_USER_EMAILS||'{}'); for(const k in j) m[_norm(k)]=String(j[k]||'').trim(); }catch(e){} return m; }
-function personalPool(items){ return items.filter(it=>it.ppend!==false && !it.noNamedOwner && !it.deliveryIssue && it.stage!=='Director'&&it.stage!=='CEO'&&it.stage!=='Sent to Supplier'&&it.stage!=='Pending Invoicing' && String(it.owner==null?'':it.owner).trim()!=='' && it.owner!=='(unassigned)'); }
+/* ---- PERSONAL action emails: one per named F&O Pending Approver/User ---- */
+function personalPool(items){ return items.filter(it=>it.ppend!==false && !it.noNamedOwner && !it.deliveryIssue && it.stage!=='Sent to Supplier'&&it.stage!=='Pending Invoicing' && String(it.owner==null?'':it.owner).trim()!=='' && it.owner!=='(unassigned)'); }
 // Same human appears under both full-name and username F&O accounts — fold them into one personal email.
-const USER_ALIAS={'dinesh laxman laxman':'dinesh.laxman','gokul krishna pillai':'Gokul.Krishna','pramod chandrasenan chandrasenan':'pramod.c','shijil choyaprath chandran':'shijil.c','zaheer ahmed ameer':'Zaheer.Ahmed','d365crm admin':'it.solutions','d365crmadmin':'it.solutions','it department':'it.solutions'};
-function canonOwner(u){ return USER_ALIAS[_norm(u)]||u; }
-function applyDeliveryPolicy(items, addresses=userEmailMap()){
+function canonOwner(u){ return String(u==null?'':u).trim(); }
+function applyDeliveryPolicy(items){
   for(const it of items){
     if(it.doc!=='PR')continue;
     const original=String(it.owner==null?'':it.owner).trim();
-    const canonical=canonOwner(original), key=_norm(canonical);
-    let issue='';
-    if(it.noNamedOwner) issue='owner not recorded in F&O';
-    else if(INACTIVE_USERNAMES.has(key)) issue='no active owner';
-    else if(!addresses[key]) issue='no email address on file';
+    const issue=it.noNamedOwner?'owner not recorded in F&O':'';
     if(issue){ it.originalOwner=original||'Owner not recorded'; it.deliveryIssue=issue; it.noNamedOwner=true; it.div='procurement'; }
   }
   return items;
@@ -565,47 +519,34 @@ function buildPersonal(p,hist){
 async function sendPersonal(out, context){
   const from=process.env.PRPO_MAIL_FROM||process.env.MAIL_FROM;
   if(!from) throw new Error('MAIL_FROM / PRPO_MAIL_FROM not set');
-  const test=(process.env.PRPO_PERSONAL_TEST||'1')!=='0';
-  const real=userEmailMap()[out.key]||'';
-  let to, subject=out.subject;
-  if(test){ const t=(process.env.PRPO_TEST_MAIL_TO||'').trim(); if(!t){ if(context) context.log('personal skip '+out.user+': test mode, PRPO_TEST_MAIL_TO not set'); return {user:out.user,sent:false,reason:'test mode: PRPO_TEST_MAIL_TO not set'}; } to=[t]; subject='[TEST · for '+out.user+(real?'':' · NO ADDRESS MAPPED')+'] '+subject; }
-  else { if(!real) throw new Error('personal delivery policy failure: no address for '+out.user); to=[real]; }
-  const msg={subject, body:{contentType:'HTML',content:out.html}, toRecipients:to.map(a=>({emailAddress:{address:a}})),
-    attachments:[{'@odata.type':'#microsoft.graph.fileAttachment',name:out.xlsx,contentType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',contentBytes:await buildXlsxBase64(out.fil,{key:'personal'})}]};
-  if(!test){ const cc=String(managerFor(out.key)||'').split(/[;,]/).concat((process.env.PRPO_PERSONAL_CC||'').split(/[;,]/)).map(s=>String(s||'').trim()).filter(Boolean).filter(a=>a.toLowerCase()!==String(to[0]).toLowerCase()); if(cc.length) msg.ccRecipients=cc.map(a=>({emailAddress:{address:a}})); }
-  { const bcc=bccList(); if(bcc.length) msg.bccRecipients=bcc.map(a=>({emailAddress:{address:a}})); }
+  const msg=await buildPersonalMessage(out);
   const token=await getToken('https://graph.microsoft.com');
   const r=await fetch('https://graph.microsoft.com/v1.0/users/'+encodeURIComponent(from)+'/sendMail',{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body:JSON.stringify({message:msg,saveToSentItems:true})});
   if(r.status!==202){ const j=await r.json().catch(()=>({})); throw new Error('personal sendMail '+r.status+' '+JSON.stringify(j.error||j).slice(0,300)); }
-  if(context) context.log('personal sent for '+out.user+' -> '+to[0]+(test?' (TEST)':''));
-  return {user:out.user,sent:true,to:to[0],test};
+  if(context) context.log('personal test-channel message for '+out.user+' -> '+WAQAS_ONLY_RECIPIENT);
+  return {user:out.user,sent:true,to:WAQAS_ONLY_RECIPIENT,waqasOnly:true};
 }
 
 /* ---- auth + send ---- */
-// BCC on EVERY email (personal + divisions, test or live) — hardcoded per CK.
-const PRPO_BCC_ALWAYS=['w.amjad@striveservicesgroup.com'];
-function bccList(){ return PRPO_BCC_ALWAYS; }
+function guardedSubject(intended,subject){ return '[FOR '+String(intended||'PR / PO team')+'] '+subject; }
+async function buildPersonalMessage(out){
+  return {subject:guardedSubject(out.user,out.subject),body:{contentType:'HTML',content:out.html},toRecipients:[{emailAddress:{address:WAQAS_ONLY_RECIPIENT}}],attachments:[{'@odata.type':'#microsoft.graph.fileAttachment',name:out.xlsx,contentType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',contentBytes:await buildXlsxBase64(out.fil,{key:'personal'})}]};
+}
+function buildDivisionMessage(out,xlsxB64){
+  return {subject:guardedSubject(out.cfg.key+' team',out.subject),body:{contentType:'HTML',content:out.html},toRecipients:[{emailAddress:{address:WAQAS_ONLY_RECIPIENT}}],attachments:[{'@odata.type':'#microsoft.graph.fileAttachment',name:out.cfg.xlsx,contentType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',contentBytes:xlsxB64}]};
+}
 async function getToken(scopeBase){ const body=new URLSearchParams({client_id:process.env.CLIENT_ID,client_secret:process.env.CLIENT_SECRET,grant_type:'client_credentials',scope:scopeBase.replace(/\/+$/,'')+'/.default'}); const r=await fetch(`https://login.microsoftonline.com/${process.env.TENANT_ID}/oauth2/v2.0/token`,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body}); const j=await r.json(); if(!r.ok||!j.access_token) throw new Error('token '+r.status+' '+(j.error_description||j.error||'')); return j.access_token; }
 async function sendDivision(out, context){
   const from=process.env.PRPO_MAIL_FROM||process.env.MAIL_FROM;
   if(!from) throw new Error('MAIL_FROM / PRPO_MAIL_FROM not set');
-  // Division emails honor the SAME test mode as personal emails: everything goes to PRPO_TEST_MAIL_TO until PRPO_PERSONAL_TEST=0.
-  const test=(process.env.PRPO_PERSONAL_TEST||'1')!=='0';
-  let toList, ccList=[], subject=out.subject;
-  if(test){ const t=(process.env.PRPO_TEST_MAIL_TO||'').trim(); if(!t){ if(context) context.log('skip '+out.cfg.key+': test mode, PRPO_TEST_MAIL_TO not set'); return {sent:false,reason:'test mode: PRPO_TEST_MAIL_TO not set'}; } toList=[t]; subject='[TEST · '+out.cfg.key+'] '+out.subject; }
-  else { toList=(process.env[out.cfg.mail]||out.cfg.defaultTo||'').split(/[;,]/).map(s=>s.trim()).filter(Boolean);
-    ccList=(out.cfg.cc||'').split(/[;,]/).map(s=>s.trim()).filter(Boolean).filter(a=>!toList.some(t2=>t2.toLowerCase()===a.toLowerCase()));
-    if(!toList.length){ if(context) context.log('skip '+out.cfg.key+': '+out.cfg.mail+' not set'); return {sent:false,reason:'no recipients'}; } }
   const xlsxB64=await buildXlsxBase64(out.fil, out.cfg);
-  const msg={subject,body:{contentType:'HTML',content:out.html},toRecipients:toList.map(a=>({emailAddress:{address:a}})),attachments:[{'@odata.type':'#microsoft.graph.fileAttachment',name:out.cfg.xlsx,contentType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',contentBytes:xlsxB64}]};
-  if(ccList.length) msg.ccRecipients=ccList.map(a=>({emailAddress:{address:a}}));
-  { const bcc=bccList(); if(bcc.length) msg.bccRecipients=bcc.map(a=>({emailAddress:{address:a}})); }
+  const msg=buildDivisionMessage(out,xlsxB64);
   const token=await getToken('https://graph.microsoft.com');
   const r=await fetch('https://graph.microsoft.com/v1.0/users/'+encodeURIComponent(from)+'/sendMail',{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
     body:JSON.stringify({message:msg,saveToSentItems:true})});
   if(r.status!==202){ const j=await r.json().catch(()=>({})); throw new Error('sendMail '+r.status+' '+JSON.stringify(j.error||j).slice(0,300)); }
-  if(context) context.log('sent '+out.cfg.key+' to '+toList.length+' recipients'+(test?' (TEST)':''));
-  return {sent:true,to:toList.length,test};
+  if(context) context.log('division test-channel message for '+out.cfg.key+' -> '+WAQAS_ONLY_RECIPIENT);
+  return {sent:true,to:WAQAS_ONLY_RECIPIENT,waqasOnly:true};
 }
 
 async function fetchXlsx(url){ const r=await fetch(url+(url.includes('?')?'&':'?')+'t='+Date.now()); if(!r.ok) throw new Error('fetch '+r.status+' '+url); return parseXlsx(Buffer.from(await r.arrayBuffer())); }
@@ -625,15 +566,14 @@ function freshnessWarning(workbookGeneratedAt, liveGeneratedAt){
 }
 function freshnessBanner(message){ return message?'<div style="border:1px solid #f59e0b;background:#fff7ed;color:#9a3412;padding:10px 13px;margin:0 0 12px;border-radius:8px;font:700 12px '+HF+';">'+esc(message)+'</div>':''; }
 async function loadItems(){
-  const [prRows,poRows,state,live]=await Promise.all([fetchXlsx(PR_URL),fetchXlsx(PO_URL),safeFetchJson(WORKBOOK_STATE_URL),safeFetchJson(DATASET_URL)]);
-  const items=applyDeliveryPolicy(buildItems(prRows,poRows));
-  const warning=freshnessWarning(state.datasetGeneratedAt,live.generatedAt);
-  for(const item of items)item.freshnessWarning=warning;
-  items.freshnessWarning=warning;
-  items.datasetRevision=state.datasetRevision||'temporary-workbook-routing-fallback';
-  items.datasetGeneratedAt=state.datasetGeneratedAt||null;
+  const live=await fetchJson(DATASET_URL);
+  if(live.sourceState!=='LIVE'||!live.pr||!Array.isArray(live.pr.rows)||!live.po||!Array.isArray(live.po.rows))throw new Error('live F&O dataset is unavailable');
+  const items=applyDeliveryPolicy(buildItems(live.pr.rows,live.po.rows));
+  items.freshnessWarning='';
+  items.datasetRevision=live.revision;
+  items.datasetGeneratedAt=live.generatedAt||null;
   items.liveDatasetGeneratedAt=live.generatedAt||null;
-  items.sourceState='WORKBOOK_FALLBACK';
+  items.sourceState='LIVE';
   return items;
 }
 
@@ -698,16 +638,16 @@ app.http('prpo-email', { methods:['GET','OPTIONS'], authLevel:'function', route:
       const out=buildPersonal(p,hist);
       if(url.searchParams.get('format')==='html') return {status:200,headers:{'Content-Type':'text/html; charset=utf-8'},body:out.html};
       if(wantSend){ const s=await sendPersonal(out,context); return {status:200,jsonBody:s}; }
-      return {status:200,jsonBody:{...datasetMeta,user:out.user,email:userEmailMap()[out.key]||null,count:out.count,value:Math.round(out.value)}};
+      return {status:200,jsonBody:{...datasetMeta,user:out.user,deliveryAddress:WAQAS_ONLY_RECIPIENT,count:out.count,value:Math.round(out.value)}};
     }
-    if(url.searchParams.get('personal')==='1'){ const map=userEmailMap(); const people=[];
-      for(const p of groupByOwner(personalPool(items))){ const out=buildPersonal(p,hist); let s={sent:false}; if(wantSend) s=await sendPersonal(out,context); people.push({user:p.user,email:map[p.key]||null,count:out.count,value:Math.round(out.value),...s}); }
-      return {status:200,jsonBody:{...datasetMeta,testMode:(process.env.PRPO_PERSONAL_TEST||'1')!=='0',sent:wantSend,people}};
+    if(url.searchParams.get('personal')==='1'){ const people=[];
+      for(const p of groupByOwner(personalPool(items))){ const out=buildPersonal(p,hist); let s={sent:false}; if(wantSend) s=await sendPersonal(out,context); people.push({user:p.user,deliveryAddress:WAQAS_ONLY_RECIPIENT,count:out.count,value:Math.round(out.value),...s}); }
+      return {status:200,jsonBody:{...datasetMeta,waqasOnly:true,sent:wantSend,people}};
     }
     const summary=[]; for(const cfg of DIVS){ if(cfg.send===false) continue; const out=buildDivision(cfg,items,hist); let s={sent:false}; if(sendAll) s=await sendDivision(out,context); summary.push({division:cfg.key,count:out.count,value:Math.round(out.value),...s}); }
     const people=[]; for(const p of groupByOwner(personalPool(items))){ const out=buildPersonal(p,hist); let s={sent:false}; if(sendAll) s=await sendPersonal(out,context); people.push({user:p.user,count:out.count,value:Math.round(out.value),...s}); }
-    return {status:200,jsonBody:{...datasetMeta,sentAll:sendAll,testMode:(process.env.PRPO_PERSONAL_TEST||'1')!=='0',divisions:summary,people}};
+    return {status:200,jsonBody:{...datasetMeta,sentAll:sendAll,waqasOnly:true,divisions:summary,people}};
   }catch(e){ context.error('prpo-email failed:',e); return {status:500,jsonBody:{error:e.message}}; }
 }});
 
-module.exports = { buildItems, buildDivision, buildXlsxBase64, parseXlsx, DIVS, personalPool, groupByOwner, buildPersonal, userEmailMap, historyItems, loadItems, applyDeliveryPolicy, freshnessWarning };
+module.exports = { buildItems, buildDivision, buildXlsxBase64, parseXlsx, DIVS, personalPool, groupByOwner, buildPersonal, historyItems, loadItems, applyDeliveryPolicy, freshnessWarning, fnoOwnerNames, buildPersonalMessage, buildDivisionMessage, WAQAS_ONLY_RECIPIENT };
