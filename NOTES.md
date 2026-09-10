@@ -43,6 +43,12 @@
 - Outlook web message details established MAPI submission, sender mailbox, and exact transport time. No Outlook data was changed.
 - `node --check src/functions/version.js`, `npm test`, `npm run build --if-present`, and `git diff --check` passed before commit. Test result: 24/24.
 - First deployment run `34446690877` stopped before Azure login because its fail-closed unit test assumed the deploy-time `build-info.json` would be absent. The test now injects an explicit nonexistent path, so it covers the same failure response whether or not the deploy workflow has baked build metadata.
+- Corrected deployment run `34446874692` passed all 24 tests, Azure OIDC login, OneDeploy, and the public build-identity check. The deployed response was HTTP 200, `Cache-Control: no-store`, and `{ "commit": "d9860329a7917b84971d34954888b8793a227497" }`, exactly matching the deployed source SHA.
+- The running `format=html` preview was fetched without `send=1`. After the dashboard workbook refresh, Adnan's visible header was `183 items pending your action · 183 still being priced · not yet priced.` and the next line was `Oldest item was with you since 2025-05-26 (471 days).` No money total was presented as queue coverage.
+- The running team preview title was `PR / PO Pipeline — Suppliers, Open Orders & Unowned PRs`. Zaheer's preview resolved `Zaheer.Ahmed@domus-housing.com`, 14 items, and dataset revision `897143ea9ac3965a190ea7e11960dae46c597cc315c22e0a0a04f76746959fc7`.
+- A same-input regression ran the current sender code against the exact pre-refresh morning workbooks from dashboard commit `15fb646b85c3e854d1e4ce99fb8ae5caa4093174`. All expected personal counts matched: dinesh 425, Adnan 189, shijil 94, roderick 88, Gokul 74, Aparna 56, Shakir 22, pramod 3, arman 2, Abdul 1. This separates code behavior from later live-data movement.
+- The HTML preview files were saved outside both repositories. The in-app browser rejected their local `file:` URL under its navigation policy, so evidence is the running service's HTML response plus extracted rendered-visible text, not a browser screenshot. No alternate-browser or debugging-protocol bypass was attempted.
+- Assumption correction: the brief's proposed cause (successful Azure deployment serving old code) was disproved by the live route output, App Insights timing, and Outlook transport headers. The safe release work therefore adds deterministic live-build proof while leaving the separately owned sender unchanged.
 
 ## Remaining risk and recommended next step
 
