@@ -14,12 +14,12 @@ function readBuildInfo(filePath = BUILD_INFO_PATH) {
   return { commit };
 }
 
-async function versionHandler(_request, context) {
+async function versionHandler(_request, context, filePath = BUILD_INFO_PATH) {
   try {
     return {
       status: 200,
       headers: { 'Cache-Control': 'no-store' },
-      jsonBody: readBuildInfo(),
+      jsonBody: readBuildInfo(filePath),
     };
   } catch (error) {
     context.error('version endpoint failed:', error);

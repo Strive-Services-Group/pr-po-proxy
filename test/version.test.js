@@ -33,7 +33,8 @@ test('version rejects missing, short, or malformed build identities', () => {
 
 test('version fails closed without leaking paths or exception detail', async () => {
   const errors = [];
-  const response = await versionHandler({}, { error: (...parts) => errors.push(parts) });
+  const missing = path.join(os.tmpdir(), 'prpo-version-file-that-does-not-exist.json');
+  const response = await versionHandler({}, { error: (...parts) => errors.push(parts) }, missing);
   assert.equal(response.status, 503);
   assert.deepEqual(response.jsonBody, { error: 'build identity is unavailable' });
   assert.equal(response.headers['Cache-Control'], 'no-store');

@@ -42,6 +42,7 @@
 - `az monitor app-insights query` established the 06:00 invocation, current registered routes, and all thirteen failed mail attempts.
 - Outlook web message details established MAPI submission, sender mailbox, and exact transport time. No Outlook data was changed.
 - `node --check src/functions/version.js`, `npm test`, `npm run build --if-present`, and `git diff --check` passed before commit. Test result: 24/24.
+- First deployment run `34446690877` stopped before Azure login because its fail-closed unit test assumed the deploy-time `build-info.json` would be absent. The test now injects an explicit nonexistent path, so it covers the same failure response whether or not the deploy workflow has baked build metadata.
 
 ## Remaining risk and recommended next step
 
