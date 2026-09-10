@@ -49,6 +49,7 @@
 - A same-input regression ran the current sender code against the exact pre-refresh morning workbooks from dashboard commit `15fb646b85c3e854d1e4ce99fb8ae5caa4093174`. All expected personal counts matched: dinesh 425, Adnan 189, shijil 94, roderick 88, Gokul 74, Aparna 56, Shakir 22, pramod 3, arman 2, Abdul 1. This separates code behavior from later live-data movement.
 - The HTML preview files were saved outside both repositories. The in-app browser rejected their local `file:` URL under its navigation policy, so evidence is the running service's HTML response plus extracted rendered-visible text, not a browser screenshot. No alternate-browser or debugging-protocol bypass was attempted.
 - Assumption correction: the brief's proposed cause (successful Azure deployment serving old code) was disproved by the live route output, App Insights timing, and Outlook transport headers. The safe release work therefore adds deterministic live-build proof while leaving the separately owned sender unchanged.
+- During the final notes-only publication, manual run `34447833177` was accidentally dispatched with an incorrectly expanded full SHA. It was cancelled before it could become a valid deployment. Run `34447870083` was then dispatched with the actual commit `da1499c945a87439e3a4bb354a874ca367abee8b`; the exact-SHA checkout guard is the control that makes this mistake fail closed.
 
 ## Remaining risk and recommended next step
 
