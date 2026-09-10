@@ -7,8 +7,17 @@ const {
   lifecycleStage,
   observationKey,
   openPO,
+  exportAuthorityText,
   refreshWithFallback
 } = require('../src/shared/prpoDataset');
+
+test('export authority sentence always names IT and only stale exports warn', () => {
+  const current = exportAuthorityText('2026-09-10T05:30:00Z', new Date('2026-09-10T06:00:00Z'));
+  assert.equal(current.provenanceSentence, 'These figures come from the Dynamics 365 F&O export supplied by IT, dated 10 September 2026.');
+  assert.equal(current.staleWarning, '');
+  const stale = exportAuthorityText('2026-09-09T05:30:00Z', new Date('2026-09-10T06:00:00Z'));
+  assert.equal(stale.staleWarning, 'Warning: the latest Dynamics 365 F&O export supplied by IT is dated 9 September 2026, so these figures are older than this morning\'s send.');
+});
 
 function context(options = {}) {
   return {

@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('crypto');
+const XLSX = require('xlsx');
 const PO_STEP_MAP = require('../../poStepMap.json');
 const PR_STAGE_MAP = require('../../prStageMap.json');
 const PO_APPROVAL_STAGE = {
@@ -19,6 +20,12 @@ let cache = null;
 let refreshPromise = null;
 let foTokenCache = null;
 let dvTokenCache = null;
+let graphTokenCache = null;
+
+const EXPORT_DRIVE_USER = 'w.amjad@striveservicesgroup.com';
+const EXPORT_FOLDER = 'Claude/PR PO Pipeline Dashboard/Email-Drops';
+const EXPORT_PR_PATTERN = /^Purchase Reques.*\.xlsx$/i;
+const EXPORT_PO_PATTERN = /^Purchase order.*\.xlsx$/i;
 
 function norm(value) { return String(value == null ? '' : value).trim().toLowerCase().replace(/\s+/g, ' '); }
 function doc(value) { return String(value == null ? '' : value).trim().toUpperCase(); }
@@ -44,6 +51,87 @@ function poNumber(value) {
   return bare ? bare[0].toUpperCase() : null;
 }
 function encodeKey(value) { return String(value).replace(/'/g, "''"); }
+
+function dubaiDay(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Dubai', year: 'numeric', month: '2-digit', day: '2-digit'
+  }).format(date);
+}
+
+function exportDateLabel(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'date not recorded';
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Dubai', day: 'numeric', month: 'long', year: 'numeric'
+  }).format(date);
+}
+
+function exportAuthorityText(exportDateUtc, referenceUtc = new Date().toISOString()) {
+  const label = exportDateLabel(exportDateUtc);
+  const stale = dubaiDay(exportDateUtc) !== dubaiDay(referenceUtc);
+  return {
+    stale,
+    provenanceSentence: `These figures come from the Dynamics 365 F&O export supplied by IT, dated ${label}.`,
+    staleWarning: stale
+      ? `Warning: the latest Dynamics 365 F&O export supplied by IT is dated ${label}, so these figures are older than this morning's send.`
+      : ''
+  };
+}
+
+async function graphToken() {
+  if (graphTokenCache && graphTokenCache.expiresAt > Date.now() + 120000) return graphTokenCache.token;
+  const body = new URLSearchParams({
+    client_id: process.env.CLIENT_ID,
+    client_secret: process.env.CLIENT_SECRET,
+    grant_type: 'client_credentials',
+    scope: 'https://graph.microsoft.com/.default'
+  });
+  const response = await fetch(`https://login.microsoftonline.com/${process.env.TENANT_ID}/oauth2/v2.0/token`, {
+    method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body
+  });
+  if (!response.ok) throw new Error(`Graph token ${response.status}`);
+  const payload = await response.json();
+  graphTokenCache = { token: payload.access_token, expiresAt: Date.now() + Number(payload.expires_in || 300) * 1000 };
+  return graphTokenCache.token;
+}
+
+function workbookRows(buffer) {
+  const workbook = XLSX.read(buffer, { type: 'buffer', cellDates: true });
+  const sheet = workbook.Sheets[workbook.SheetNames[0]];
+  return XLSX.utils.sheet_to_json(sheet, { defval: null, raw: true });
+}
+
+function newestFile(files, pattern) {
+  return files.filter(file => pattern.test(String(file.name || '')))
+    .sort((a, b) => new Date(b.lastModifiedDateTime) - new Date(a.lastModifiedDateTime))[0] || null;
+}
+
+async function loadExportAuthority(referenceUtc) {
+  const token = await graphToken();
+  const root = 'https://graph.microsoft.com/v1.0/users/' + encodeURIComponent(EXPORT_DRIVE_USER) + '/drive/root:/' +
+    EXPORT_FOLDER.split('/').map(encodeURIComponent).join('/') + ':/children?$select=id,name,lastModifiedDateTime,size';
+  const listingResponse = await fetch(root, { headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' } });
+  if (!listingResponse.ok) throw new Error(`F&O export folder ${listingResponse.status}`);
+  const files = (await listingResponse.json()).value || [];
+  const prFile = newestFile(files, EXPORT_PR_PATTERN);
+  const poFile = newestFile(files, EXPORT_PO_PATTERN);
+  if (!prFile || !poFile) throw new Error('F&O export pair is incomplete in Email-Drops');
+  const download = async file => {
+    const response = await fetch('https://graph.microsoft.com/v1.0/users/' + encodeURIComponent(EXPORT_DRIVE_USER) +
+      '/drive/items/' + encodeURIComponent(file.id) + '/content', { headers: { Authorization: `Bearer ${token}` } });
+    if (!response.ok) throw new Error(`F&O export download ${response.status}: ${file.name}`);
+    return Buffer.from(await response.arrayBuffer());
+  };
+  const [prBuffer, poBuffer] = await Promise.all([download(prFile), download(poFile)]);
+  const exportDateUtc = [prFile.lastModifiedDateTime, poFile.lastModifiedDateTime].sort().at(-1);
+  return {
+    prRows: workbookRows(prBuffer), poRows: workbookRows(poBuffer),
+    prFile: prFile.name, poFile: poFile.name, exportDateUtc,
+    ...exportAuthorityText(exportDateUtc, referenceUtc)
+  };
+}
 
 async function foToken() {
   if (foTokenCache && foTokenCache.expiresAt > Date.now() + 120000) return foTokenCache.token;
@@ -226,6 +314,7 @@ function lifecycleStage(header, key, context) {
 async function buildDataset() {
   const token = await foToken();
   const now = new Date().toISOString();
+  const exportAuthorityPromise = loadExportAuthority(now);
   const [prHeaders, prLines, prBi, poHeaders, poLines, vendors, confirmations, packing, invoices,
     snapshots, instances, captureItems, observations] = await Promise.all([
     odataAll(token, 'PurchaseRequisitionHeaders?$select=RequisitionNumber,RequisitionName,RequisitionStatus,DefaultProjectId,IFAHRQuotationReference,PreparerPersonnelNumber,RequisitionPurpose,DefaultRequestedDate,ProjectBuyingLegalEntityId'),
@@ -306,7 +395,7 @@ async function buildDataset() {
   const existingObs = new Map(observations.filter(x => String(x.ssg_documentkey || '').startsWith(OBS_PREFIX)).map(x => [x.ssg_documentkey, x]));
   const context = { numberKeys, capture, packing: packingBy };
 
-  const poRows = [];
+  let poRows = [];
   const pendingWrites = [];
   for (const h of poHeaders) {
     const number = doc(h.PurchaseOrderNumber); const company = norm(h.dataAreaId); const key = entityKey(company, number);
@@ -394,7 +483,7 @@ async function buildDataset() {
         (snapshot && (snapshot.ssg_pendingapprovernames || snapshot.ssg_pendinguserids)) || null
     };
   }
-  const prRows = prHeaders.map(h => {
+  let prRows = prHeaders.map(h => {
     const n = doc(h.RequisitionNumber); const company = norm(h.ProjectBuyingLegalEntityId);
     const allLines = prLineBy.get(n) || [];
     const lines = allLines.filter(line => !norm(line.LineStatus).includes('cancel'));
@@ -431,7 +520,51 @@ async function buildDataset() {
     };
   });
 
-  const revisionMaterial = JSON.stringify({ prRows, poRows });
+  const exportAuthority = await exportAuthorityPromise;
+  const basePrByNumber = new Map(prRows.map(row => [doc(row['Purchase requisition']), row]));
+  const basePoByNumber = new Map(poRows.map(row => [doc(row['Purchase order']), row]));
+  function oneExportOwner(value, number, preparer) {
+    const raw = String(value == null ? '' : value).trim();
+    if (raw.includes(',')) throw new Error(`F&O export data fault: ${number} has more than one owner`);
+    if (raw) return raw;
+    return `No named owner — Pending Approver/User is blank in the Dynamics 365 F&O export; preparer: ${String(preparer || 'not recorded').trim()}`;
+  }
+  prRows = exportAuthority.prRows.map(source => {
+    const number = doc(source['Purchase requisition']);
+    if (!number) throw new Error('F&O requisition export contains a row without a requisition number');
+    const base = basePrByNumber.get(number) || {};
+    return {
+      ...base,
+      ...source,
+      'Purchase requisition': number,
+      'Pending Approver/User': oneExportOwner(source['Pending Approver/User'], number, source.Preparer),
+      'Stage reason code': base['Stage reason code'] || null,
+      'Authority source': 'Dynamics 365 F&O export supplied by IT',
+      'Authority export date': exportAuthority.exportDateUtc
+    };
+  });
+  poRows = exportAuthority.poRows.map(source => {
+    const number = doc(source['Purchase order']);
+    if (!number) throw new Error('F&O purchase-order export contains a row without a purchase-order number');
+    const base = basePoByNumber.get(number) || {};
+    const owner = String(source['Pending Approver/User'] == null ? '' : source['Pending Approver/User']).trim();
+    if (owner.includes(',')) throw new Error(`F&O export data fault: ${number} has more than one owner`);
+    return {
+      ...base,
+      ...source,
+      'Purchase order': number,
+      'Pending Approver/User': owner || 'No named owner — Pending Approver/User is blank in the Dynamics 365 F&O export',
+      'Live stage': source['Step name'] || null,
+      'Stage reason code': 'F_AND_O_EXPORT',
+      'Clock provenance': 'F_AND_O_EXPORT',
+      'Clock label': 'F&O export step date',
+      'Open pipeline': openPO(source['Purchase order status'], source['Approval status']),
+      'Authority source': 'Dynamics 365 F&O export supplied by IT',
+      'Authority export date': exportAuthority.exportDateUtc
+    };
+  });
+
+  const revisionMaterial = JSON.stringify({ exportDateUtc: exportAuthority.exportDateUtc, prRows, poRows });
   const revision = crypto.createHash('sha256').update(revisionMaterial).digest('hex');
   const openRows = poRows.filter(row => row['Open pipeline']);
   const clocks = new Map();
@@ -443,7 +576,16 @@ async function buildDataset() {
       datasetGeneratedUtc: now,
       fAndOReadUtc: now,
       approvalCaptureReconciledUtc: captureReconciledUtc,
-      effectiveDataTimeUtc: earliest([now, captureReconciledUtc])
+      effectiveDataTimeUtc: exportAuthority.exportDateUtc
+    },
+    exportAuthority: {
+      source: 'Dynamics 365 F&O export supplied by IT',
+      prFile: exportAuthority.prFile,
+      poFile: exportAuthority.poFile,
+      exportDateUtc: exportAuthority.exportDateUtc,
+      stale: exportAuthority.stale,
+      provenanceSentence: exportAuthority.provenanceSentence,
+      staleWarning: exportAuthority.staleWarning
     },
     pendingObservationWrites: pendingWrites.length,
     pr: { count: prRows.length, rows: prRows },
@@ -494,5 +636,7 @@ module.exports = {
   readObservation,
   upsertObservation,
   openPO,
+  exportAuthorityText,
+  workbookRows,
   refreshWithFallback
 };

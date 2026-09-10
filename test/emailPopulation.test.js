@@ -38,10 +38,9 @@ test('every actionable PR uses only F&O Pending Approver/User', () => {
   assert.ok(items.every(item => !String(item.owner).startsWith('invented.')));
 });
 
-test('F&O comma-joined owners are split and case-insensitively de-duplicated without aliases', () => {
-  assert.deepEqual(fnoOwnerNames('Adnan.Ullah, adnan.ullah, Dinesh Laxman Laxman'), ['Adnan.Ullah', 'Dinesh Laxman Laxman']);
-  const items = buildItems([{ ...pr('In review', 'PR-SHARED'), 'Pending Approver/User': 'Adnan.Ullah, adnan.ullah, roderick.red' }], []);
-  assert.deepEqual(items.map(item => item.owner), ['Adnan.Ullah', 'roderick.red']);
+test('an export owner is singular and comma-joined values fail as a data fault', () => {
+  assert.deepEqual(fnoOwnerNames('Adnan.Ullah'), ['Adnan.Ullah']);
+  assert.throws(() => fnoOwnerNames('Adnan.Ullah, roderick.red'), /data fault/);
 });
 
 test('every Stage reason code becomes the shared plain-English class', () => {
@@ -149,7 +148,8 @@ test('all-unpriced and partly-priced queues never imply one total covers every i
   assert.match(partial.html, /2 items/);
   assert.match(partial.html, /1 still being priced/);
   assert.match(partial.html, /1 priced/);
-  assert.match(partial.html, /AED 250 excl\. VAT/);
+  assert.match(partial.html, /AED 250/);
+  assert.doesNotMatch(partial.html, /excl\. VAT/);
 });
 
 test('PR age wording distinguishes raised date from a distinct step date', () => {
@@ -162,16 +162,36 @@ test('PR age wording distinguishes raised date from a distinct step date', () =>
   assert.match(distinctItem.clockLabel, /^with you since 2026-09-05 \(\d+ days\)$/);
 });
 
-test('shared item names other active buyers and excludes an inactive username', () => {
-  const row = { ...pr('In review', 'PR-SHARED-ACTIVE'), 'Stage reason code': 'ACTIVE_LINES_NOT_FULLY_PRICED', 'Pending Approver/User': 'Adnan.Ullah, Layusha.cleatus, roderick.red' };
+test('export records are never marked as shared', () => {
+  const row = { ...pr('In review', 'PR-SINGLE'), 'Stage reason code': 'ACTIVE_LINES_NOT_FULLY_PRICED', 'Pending Approver/User': 'Adnan.Ullah' };
   const item = buildItems([row], [])[0];
-  assert.equal(item.sourceShared, true);
-  assert.deepEqual(item.otherLiveBuyers, ['roderick.red']);
-  assert.doesNotMatch(item.sharedLabel, /Layusha/i);
+  assert.equal(item.sourceShared, false);
+  assert.deepEqual(item.otherLiveBuyers, []);
+  assert.equal(item.sharedLabel, '');
   const out = buildPersonal(groupByOwner(personalPool([item]))[0], {});
-  assert.equal(out.sourceSharedCount, 1);
-  assert.equal(out.sharedWithOtherActiveBuyers, 1);
-  assert.match(out.html, /Shared with roderick\.red/);
+  assert.equal(out.sourceSharedCount, 0);
+  assert.equal(out.sharedWithOtherActiveBuyers, 0);
+  assert.doesNotMatch(out.html, /Shared with/);
+});
+
+test('export step decides the queue even when pricing classification contradicts it', () => {
+  const row = { ...pr('In review', 'PR-STEP-WINS'), 'Step name': 'Quotation shared to Operations for confirmation', 'Stage reason code': 'ACTIVE_LINES_NOT_FULLY_PRICED' };
+  const item = buildItems([row], [])[0];
+  assert.equal(item.stage, 'Operations to Confirm');
+});
+
+test('export totals win over line arithmetic for VAT and zero-rated records', () => {
+  const vat = { ...pr('In review', 'PR-VAT'), 'Total amount': 105, 'Line total': 100 };
+  const zero = { ...pr('In review', 'PR-ZERO'), 'Total amount': 100, 'Line total': 100 };
+  const [vatItem, zeroItem] = buildItems([vat, zero], []);
+  assert.equal(vatItem.value, 105);
+  assert.equal(zeroItem.value, 100);
+});
+
+test('PO export owner remains present', () => {
+  const row = { 'Purchase order':'PO-OWNER', 'Approval status':'In review', 'Purchase order status':'Open order', 'Pending Approver/User':'arman.b', 'Step name':'Accounting Manager', 'Total amount':200 };
+  const item = buildItems([], [row]).find(candidate => candidate.ref === 'PO-OWNER');
+  assert.equal(item.owner, 'arman.b');
 });
 
 test('every F&O-named holder remains a personal test-channel population', () => {
