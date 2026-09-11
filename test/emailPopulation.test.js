@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const XLSX = require('xlsx');
 const workRule = require('../work-class-rule.json');
-const { buildItems, buildDivision, buildXlsxBase64, groupByOwner, personalPool, buildPersonal, DIVS, parseXlsx, applyDeliveryPolicy, freshnessWarning, fnoOwnerNames, buildPersonalMessage, buildDivisionMessage, WAQAS_ONLY_RECIPIENT } = require('../src/functions/prpoEmail');
+const { buildItems, buildDivision, buildXlsxBase64, groupByOwner, personalPool, buildPersonal, DIVS, parseXlsx, applyDeliveryPolicy, freshnessWarning, fnoOwnerNames, buildPersonalMessage, buildDivisionMessage, buildReconciliationEmail, buildReconciliationMessage, reconciliationModel, addressForOwner, WAQAS_ONLY_RECIPIENT, PRPO_PERSONAL_DELIVERY_MODE } = require('../src/functions/prpoEmail');
 
 function pr(status, number) {
   return {
@@ -212,9 +212,11 @@ test('every F&O-named holder remains a personal test-channel population', () => 
 });
 
 test('every personal and team message is hard-guarded to Waqas only', async () => {
+  assert.equal(PRPO_PERSONAL_DELIVERY_MODE, 'waqas_only');
   const personal = buildPersonal(groupByOwner(personalPool(buildItems([{ ...pr('In review', 'PR-GUARD'), 'Pending Approver/User': 'Adnan.Ullah' }], [])))[0], {});
   const messages = [await buildPersonalMessage(personal)];
   for (const cfg of DIVS) messages.push(buildDivisionMessage({ cfg, subject: 'Team list', html: '<p>Preview</p>' }, 'test-attachment'));
+  messages.push(buildReconciliationMessage(buildReconciliationEmail(applyDeliveryPolicy(buildItems([{ ...pr('In review', 'PR-REC'), 'Pending Approver/User': 'Adnan.Ullah' }], [])))));
   for (const message of messages) {
     assert.deepEqual(message.toRecipients, [{ emailAddress: { address: WAQAS_ONLY_RECIPIENT } }]);
     assert.equal(Object.hasOwn(message, 'ccRecipients'), false);
@@ -223,6 +225,45 @@ test('every personal and team message is hard-guarded to Waqas only', async () =
     const addresses = JSON.stringify(message).match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) || [];
     assert.deepEqual([...new Set(addresses.map(address => address.toLowerCase()))], [WAQAS_ONLY_RECIPIENT]);
   }
+});
+
+test('direct delivery switch sends a personal digest only to the named owner', async () => {
+  const items = applyDeliveryPolicy(buildItems([{ ...pr('In review', 'PR-DIRECT'), 'Pending Approver/User': 'Adnan.Ullah' }], []), { deliveryMode: 'direct_to_owner' });
+  const personal = buildPersonal(groupByOwner(personalPool(items))[0], {});
+  const message = await buildPersonalMessage(personal, { deliveryMode: 'direct_to_owner' });
+  assert.deepEqual(message.toRecipients, [{ emailAddress: { address: addressForOwner('Adnan.Ullah') } }]);
+  assert.equal(Object.hasOwn(message, 'ccRecipients'), false);
+  assert.equal(Object.hasOwn(message, 'bccRecipients'), false);
+  assert.doesNotMatch(message.subject, /^\[FOR .+\] /);
+});
+
+test('direct delivery switch reports a person with no address and keeps their item in the team list', () => {
+  const items = applyDeliveryPolicy(buildItems([{ ...pr('In review', 'PR-NO-ADDRESS'), 'Pending Approver/User': 'Sirinikhil', 'Department': 'Housekeeping Services' }], []), { deliveryMode: 'direct_to_owner' });
+  assert.equal(items[0].deliveryIssue, 'no email address on file');
+  assert.equal(items[0].needsTeamList, true);
+  assert.equal(personalPool(items).length, 0);
+  const procurement = buildDivision(DIVS.find(d=>d.key==='procurement'), items, {});
+  assert.match(procurement.html, /Sirinikhil/);
+  assert.match(procurement.html, /no email address on file/);
+});
+
+test('reconciliation table arithmetic compares export owners to email counts', () => {
+  const items = applyDeliveryPolicy(buildItems([
+    { ...pr('In review', 'PR-ADNAN-1'), 'Pending Approver/User': 'Adnan.Ullah' },
+    { ...pr('In review', 'PR-ADNAN-2'), 'Pending Approver/User': 'Adnan.Ullah' },
+    { ...pr('In review', 'PR-RODERICK'), 'Pending Approver/User': 'roderick.red' },
+    { ...pr('In review', 'PR-SIRINIKHIL'), 'Pending Approver/User': 'Sirinikhil' }
+  ], []));
+  items.exportDateUtc = '2026-09-07T08:00:00Z';
+  items.exportAuthority = { prFile: 'Purchase Reques.xlsx', poFile: 'Purchase order.xlsx' };
+  items.provenanceSentence = 'These figures come from the Dynamics 365 F&O export supplied by IT, dated 7 September 2026.';
+  const model = reconciliationModel(items, { 'Adnan.Ullah': 2, 'roderick.red': 0, 'Sirinikhil': 1 });
+  assert.deepEqual(model.rows.find(row => row.person === 'Adnan.Ullah'), { person: 'Adnan.Ullah', exportCount: 2, emailCount: 2, difference: 0 });
+  assert.deepEqual(model.rows.find(row => row.person === 'roderick.red'), { person: 'roderick.red', exportCount: 1, emailCount: 0, difference: -1 });
+  assert.deepEqual(model.noAddress, ['Sirinikhil']);
+  const email = buildReconciliationEmail(items, { 'Adnan.Ullah': 2, 'roderick.red': 0, 'Sirinikhil': 1 });
+  assert.match(email.html, /Purchase Reques\.xlsx and Purchase order\.xlsx, dated 7 September 2026/);
+  assert.match(email.html, /1 people do not match\./);
 });
 
 test('stale warning appears after six hours and stays absent when fresh', () => {

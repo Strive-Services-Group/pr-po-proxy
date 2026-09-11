@@ -114,3 +114,20 @@ The comparison covers 954 actionable PR documents. Every named-owner difference 
 - No Dataverse write and no `/api/dataset` code change occurred.
 - Chandan's sender, flow, OneDrive, tokens and recipients were not touched.
 - No email was sent.
+
+# 11 September 2026 PR/PO sender activation and reconciliation
+
+- Task authority: turn on the PR/PO Function App sender for Waqas-only production proving, add one daily reconciliation email, add an off-by-default direct-recipient switch, change only the send-from mailbox app setting, deploy, and send the real Waqas-only run.
+- Source inspected: `src/functions/prpoEmail.js`, `test/emailPopulation.test.js`, `user-email-addresses.json`, `PRPO-EMAIL-SETUP.md`, Azure app setting names for `ssg-prpo-proxy`, and the dashboard `CLAUDE.md`.
+- App setting changed: added `PRPO_MAIL_FROM=w.amjad@striveservicesgroup.com` on `ssg-prpo-proxy`. The command output listed setting names only. No secret, token, tenant id, client id, client secret, Graph permission, recipient list, or Chandan setting was read or changed.
+- Delivery switch added in code as `PRPO_PERSONAL_DELIVERY_MODE`. It is set to `waqas_only`. To flip the sender later, change it to `direct_to_owner` and redeploy after Waqas approves.
+- Switch-off rule: every personal digest, every active team list, and the new reconciliation email build one `toRecipients` entry for `w.amjad@striveservicesgroup.com`; no `ccRecipients` or `bccRecipients` fields are created.
+- Switch-on test rule: personal digests resolve the F&O owner through `user-email-addresses.json`, remove the `[FOR <person>]` prefix, and still create no Cc or Bcc. If a named owner has no address, that person is listed in the reconciliation email and their items are kept in the team list instead of silently dropping.
+- Reconciliation email added: after the daily digests it sends one Waqas-only message with columns `person`, `F&O export says`, `our email said`, and `difference`; it also names the export files/date, total matched/different people, missing-address people, and the verdict sentence.
+- The reconciliation counts are built from the IT-supplied F&O export values already carried by `/api/dataset`, not from yesterday's workbook or from the old rebuilt holder layer.
+- Tests run in proxy: `npm test` at 2026-09-11T06:34Z. Result: 33 passed, 0 failed. New coverage includes switch off, switch on, no-address handling, and reconciliation arithmetic.
+- Tests run in dashboard after fast-forwarding main: `node --test tests/*.test.js`. Result: 24 passed, 0 failed.
+- Python dashboard tests run: `python -m unittest discover -s tests -p "test_*.py"`. Result: 23 passed, 0 failed.
+- Build check note: `node -c index.html` is not a valid production-build check for this HTML dashboard and failed with Node's unknown `.html` extension error. It is not counted as a dashboard failure; the repository has no `package.json` build command.
+- Local no-send reconciliation render attempted with `node -e` against `email.loadItems()`. It was stopped after the live dataset fetch took too long locally. A direct read of the production `/api/dataset` returned HTTP 200, so final preview/send verification will use the deployed Function endpoint.
+- Chandan Kumar's sender, flow, OneDrive, tokens, template, recipients, and schedule were not opened or changed.

@@ -28,10 +28,12 @@ const XLSX = require('xlsx');
 const ExcelJS = require('exceljs');
 const WORK_CLASS_RULE = require('../../work-class-rule.json');
 const INACTIVE_USERNAMES = new Set(require('../../inactive-usernames.json').inactiveUsernames.map(v=>String(v).trim().toLowerCase().replace(/\s+/g,' ')));
+const ADDRESS_BOOK = require('../../user-email-addresses.json');
 
 const DASH   = process.env.PRPO_DASH_URL || 'https://strive-services-group.github.io/PR-PO-Pipeline-Dashboard/';
 const DATASET_URL = process.env.PRPO_DATASET_URL || 'https://ssg-prpo-proxy-h4cvfegaduftedhz.uaenorth-01.azurewebsites.net/api/dataset';
 const WAQAS_ONLY_RECIPIENT = 'w.amjad@striveservicesgroup.com';
+const PRPO_PERSONAL_DELIVERY_MODE = 'waqas_only'; // Change to 'direct_to_owner' only after Waqas approves the live cutover.
 const FONT = 'Aptos,Segoe UI,Arial,sans-serif', NAVY = '#14315E', RED = '#dc2626', TEAL = '#0f766e', W = 1000;
 
 const PR_MAP = {"Handyman Services_Manager":"Dep Managers","Building Services_Asst. Facility Managers 1":"Dep Managers","PurchReqReviewTask":"PR In Review","Procurement sends inquiry/RFQ to suppliers":"RFQ to suppliers","Quotation received and logged/attached":"Qt received & Logged","Quotation shared to Operations for confirmation":"Qt Shared to Op","Operations confirms material/scope":"OP confirms material","Unit prices updated in PR lines":"Unit Price Updated","Building Services_Asst. Facility Managers 2":"Dep Managers","Building Services_Facilities Manager":"Dep Managers","PAC Services_Manager":"Dep Managers","Concierge Services_Manager":"Dep Managers","Security Services_Manager":"Dep Managers","Home Services_Operations Manager":"Dep Managers","Landscaping_Manager":"Dep Managers","Finance & Accounts_Accounting Manager":"Finance","Facilities Management_Director":"Director","Commercial_Director":"Director","Executive Management_CEO":"CEO"};
@@ -88,6 +90,10 @@ function opsDivFor(reqdept){ return (reqdept==='Home Maintenance Services'||reqd
 function prPendingWith(r){ return String(r['Pending Approver/User']||'').trim(); }
 const NO_NAMED_OWNER='No named owner';
 function isNoNamedOwner(value){ const v=_norm(value); return !v||v==='(unassigned)'||v==='not recorded'||v.startsWith('no named owner')||v.startsWith('employee number '); }
+const ADDRESS_BY_OWNER={}; for(const [name,address] of Object.entries(ADDRESS_BOOK)){ ADDRESS_BY_OWNER[_norm(name)]=String(address||'').trim(); }
+function addressForOwner(owner){ return ADDRESS_BY_OWNER[_norm(owner)]||''; }
+function deliveryMode(options){ return options&&options.deliveryMode?options.deliveryMode:PRPO_PERSONAL_DELIVERY_MODE; }
+function isDirectDelivery(options){ return deliveryMode(options)==='direct_to_owner'; }
 function fnoOwnerNames(value){
   const raw=String(value==null?'':value).trim();
   if(!raw)return [];
@@ -264,7 +270,7 @@ function f_dept(its,L,col){
     otable([['Department',210,'l'],['Items',56,'c'],['Breach&gt;7d',82,'c'],['Avg',52,'c'],['Value',130,'r']],rows));
 }
 function f_noNamedOwner(its,L,col){
-  const rows=its.filter(it=>it.doc==='PR'&&it.noNamedOwner); if(!rows.length)return '';
+  const rows=its.filter(it=>it.noNamedOwner||it.needsTeamList); if(!rows.length)return '';
   const groups=grpBy(rows,it=>(it.originalOwner||it.owner||'Owner not recorded')+'|'+(it.deliveryIssue||'owner not recorded in F&O')+'|'+(it.workClass||'Work class not reported')+'|'+(it.dept||'Department not reported'));
   const body=Object.entries(groups).map(([key,list])=>{
     const [owner,reason,cls,dept]=key.split('|');
@@ -272,7 +278,7 @@ function f_noNamedOwner(its,L,col){
     const pricing=pricedStats(list);
     return [esc(owner),esc(reason),esc(cls),esc(dept),String(list.length),agec(oldest),pricing.priced?(pricing.priced+' priced &#183; AED '+money(pricing.value)):'Not yet priced'];
   }).sort((a,b2)=>Number(b2[4])-Number(a[4]));
-  return finding(L,col,'No named owner',rows.length+' requisitions',b(rows.length)+' requisitions have no active owner or no usable email address. They remain visible here and are not emailed as personal queues.',
+  return finding(L,col,'No named owner / no address',rows.length+' items',b(rows.length)+' items have no named owner or no usable email address. They remain visible here and are not emailed as personal queues.',
     otable([['Recorded holder',150,'l'],['Reason',150,'l'],['Class of work',220,'l'],['Department',155,'l'],['Items',54,'c'],['Oldest',58,'c'],['Recorded value',180,'r']],body));
 }
 
@@ -281,7 +287,7 @@ const DIVS = [
  {key:'procurement', xlsx:'PRPO_Suppliers_OpenOrders_list.xlsx', title:'Suppliers, Open Orders &amp; Unowned PRs',
   heading:'PR / PO Pipeline &#8212; Suppliers, Open Orders &amp; Unowned PRs', sub:'Supplier-side POs plus requisitions that have no named owner &#183; member queues arrive as individual action emails', accent:'#a855f7',
   pr:[], po:['Confirmed Open Order','Sent to Supplier'], restage:'Confirmed Open Order',
-  match:it=>(it.doc==='PR'&&it.noNamedOwner)||(it.doc==='PO'&&(it.stage==='Sent to Supplier'||(it.ppend===false&&String(it.raw['Approval status']||'')==='Confirmed'&&String(it.raw['Purchase order status']||'')==='Open order'))),
+  match:it=>(it.doc==='PR'&&(it.noNamedOwner||it.needsTeamList))||(it.doc==='PO'&&(it.needsTeamList||it.stage==='Sent to Supplier'||(it.ppend===false&&String(it.raw['Approval status']||'')==='Confirmed'&&String(it.raw['Purchase order status']||'')==='Open order'))),
   findings:[f=>f_noNamedOwner(f,'A','#dc2626'), f=>f_vendor(f,'Sent to Supplier','B','#a855f7','Sent to Supplier &#8212; awaiting delivery / GRN','Chase the suppliers below for delivery, then move to invoicing.'), f=>f_value(f,'C','#2563eb'), f=>f_oldest(f,'D','#dc2626'), f=>f_sla(f,'E','#e11d48')]},
  {key:'invoicing', xlsx:'PRPO_PendingInvoicing_list.xlsx', title:'Pending Invoicing',
   heading:'PR / PO Pipeline &#8212; Pending Invoicing', sub:'POs confirmed &amp; received &#8212; awaiting supplier invoice posting by Accounts', accent:'#f97316',
@@ -401,12 +407,17 @@ function buildDivision(cfg, items, hist){
 function personalPool(items){ return items.filter(it=>it.ppend!==false && !it.noNamedOwner && !it.deliveryIssue && it.stage!=='Sent to Supplier'&&it.stage!=='Pending Invoicing' && String(it.owner==null?'':it.owner).trim()!=='' && it.owner!=='(unassigned)'); }
 // Same human appears under both full-name and username F&O accounts — fold them into one personal email.
 function canonOwner(u){ return String(u==null?'':u).trim(); }
-function applyDeliveryPolicy(items){
+function applyDeliveryPolicy(items, options){
   for(const it of items){
-    if(it.doc!=='PR')continue;
     const original=String(it.owner==null?'':it.owner).trim();
     const issue=it.noNamedOwner?'owner not recorded in F&O':'';
     if(issue){ it.originalOwner=original||'Owner not recorded'; it.deliveryIssue=issue; it.noNamedOwner=true; it.div='procurement'; }
+    else if(isDirectDelivery(options)&&it.ppend!==false&&!addressForOwner(original)&&it.stage!=='Sent to Supplier'&&it.stage!=='Pending Invoicing'){
+      it.originalOwner=original;
+      it.deliveryIssue='no email address on file';
+      it.needsTeamList=true;
+      it.div='procurement';
+    }
   }
   return items;
 }
@@ -506,24 +517,77 @@ function buildPersonal(p,hist){
   const xlsx='PRPO_'+p.user.replace(/[^\w.-]+/g,'_')+'_pending.xlsx';
   return { subject, html:wrap, fil:xfil, count:n, value:totv, pricedCount:pricing.priced,pricingQueueCount:pricingQueue,unvaluedOutsidePricing,sourceSharedCount:sourceShared,sharedWithOtherActiveBuyers:sharedWithOthers,priceSummaryText,oldestSummaryText,sharedSummaryText,user:p.user,key:p.key,xlsx,sections:sectionMeta,classCounts:Object.fromEntries(classKeys.map(k=>[k,classGroups[k].length])) };
 }
-async function sendPersonal(out, context){
+async function sendPersonal(out, context, options){
   const from=process.env.PRPO_MAIL_FROM||process.env.MAIL_FROM;
   if(!from) throw new Error('MAIL_FROM / PRPO_MAIL_FROM not set');
-  const msg=await buildPersonalMessage(out);
+  const msg=await buildPersonalMessage(out, options);
   const token=await getToken('https://graph.microsoft.com');
   const r=await fetch('https://graph.microsoft.com/v1.0/users/'+encodeURIComponent(from)+'/sendMail',{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body:JSON.stringify({message:msg,saveToSentItems:true})});
   if(r.status!==202){ const j=await r.json().catch(()=>({})); throw new Error('personal sendMail '+r.status+' '+JSON.stringify(j.error||j).slice(0,300)); }
-  if(context) context.log('personal test-channel message for '+out.user+' -> '+WAQAS_ONLY_RECIPIENT);
-  return {user:out.user,sent:true,to:WAQAS_ONLY_RECIPIENT,waqasOnly:true};
+  const to=msg.toRecipients[0].emailAddress.address;
+  if(context) context.log('personal message for '+out.user+' -> '+to);
+  return {user:out.user,sent:true,to,waqasOnly:to.toLowerCase()===WAQAS_ONLY_RECIPIENT};
 }
 
 /* ---- auth + send ---- */
 function guardedSubject(intended,subject){ return '[FOR '+String(intended||'PR / PO team')+'] '+subject; }
-async function buildPersonalMessage(out){
-  return {subject:guardedSubject(out.user,out.subject),body:{contentType:'HTML',content:out.html},toRecipients:[{emailAddress:{address:WAQAS_ONLY_RECIPIENT}}],attachments:[{'@odata.type':'#microsoft.graph.fileAttachment',name:out.xlsx,contentType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',contentBytes:await buildXlsxBase64(out.fil,{key:'personal'})}]};
+async function buildPersonalMessage(out, options){
+  const direct=isDirectDelivery(options), address=direct?addressForOwner(out.user):WAQAS_ONLY_RECIPIENT;
+  if(!address) throw new Error('no email address on file for '+out.user);
+  return {subject:direct?out.subject:guardedSubject(out.user,out.subject),body:{contentType:'HTML',content:out.html},toRecipients:[{emailAddress:{address}}],attachments:[{'@odata.type':'#microsoft.graph.fileAttachment',name:out.xlsx,contentType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',contentBytes:await buildXlsxBase64(out.fil,{key:'personal'})}]};
 }
 function buildDivisionMessage(out,xlsxB64){
   return {subject:guardedSubject(out.cfg.key+' team',out.subject),body:{contentType:'HTML',content:out.html},toRecipients:[{emailAddress:{address:WAQAS_ONLY_RECIPIENT}}],attachments:[{'@odata.type':'#microsoft.graph.fileAttachment',name:out.cfg.xlsx,contentType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',contentBytes:xlsxB64}]};
+}
+function personalAttributionPool(items){ return items.filter(it=>it.ppend!==false && !it.noNamedOwner && it.stage!=='Sent to Supplier'&&it.stage!=='Pending Invoicing' && String(it.owner==null?'':it.owner).trim()!=='' && it.owner!=='(unassigned)'); }
+function ownerCountMap(pool){ const map={}; for(const p of groupByOwner(pool)){ map[p.user]=p.items.length; } return map; }
+function exportFileLine(items){
+  const authority=(items&&items.exportAuthority)||{};
+  const pr=authority.prFile||'Purchase Reques.xlsx', po=authority.poFile||'Purchase order.xlsx';
+  const date=items&&items.exportDateUtc?exportDateLabel(items.exportDateUtc):'date not recorded';
+  return 'Export used: '+pr+' and '+po+', dated '+date+'.';
+}
+function exportDateLabel(value){
+  const d=new Date(value); if(isNaN(d))return 'date not recorded';
+  return new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Dubai',day:'numeric',month:'long',year:'numeric'}).format(d);
+}
+function reconciliationModel(items, emailCounts){
+  const exportGroups=groupByOwner(personalAttributionPool(items));
+  const exportCounts={}; for(const p of exportGroups)exportCounts[p.user]=p.items.length;
+  const sent=emailCounts||ownerCountMap(personalPool(items));
+  const people=Array.from(new Set([...Object.keys(exportCounts),...Object.keys(sent)])).sort((a,b2)=>(exportCounts[b2]||0)-(exportCounts[a]||0)||a.localeCompare(b2));
+  const rows=people.map(person=>({person,exportCount:exportCounts[person]||0,emailCount:sent[person]||0,difference:(sent[person]||0)-(exportCounts[person]||0)}));
+  const differences=rows.filter(row=>row.difference!==0).length;
+  const noAddress=exportGroups.filter(p=>!addressForOwner(p.user)).map(p=>p.user).sort((a,b2)=>a.localeCompare(b2));
+  return {rows,differences,matched:rows.length-differences,noAddress};
+}
+function buildReconciliationEmail(items, emailCounts){
+  const rec=reconciliationModel(items,emailCounts);
+  const stamp=new Date(Date.now()+4*3600*1000).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric',timeZone:'UTC'});
+  const warning=items.freshnessWarning||'';
+  const rowHtml=rec.rows.map((row,i)=>'<tr><td style="padding:7px 9px;border-bottom:1px solid #e5e7eb;font:600 12px '+HF+';color:#14315E;background:'+(i%2?'#f8fafc':'#fff')+';">'+esc(row.person)+'</td><td align="right" style="padding:7px 9px;border-bottom:1px solid #e5e7eb;font:700 12px '+HF+';">'+row.exportCount+'</td><td align="right" style="padding:7px 9px;border-bottom:1px solid #e5e7eb;font:700 12px '+HF+';">'+row.emailCount+'</td><td align="right" style="padding:7px 9px;border-bottom:1px solid #e5e7eb;font:800 12px '+HF+';color:'+(row.difference?'#b91c1c':'#16794a')+';">'+(row.difference>0?'+':'')+row.difference+'</td></tr>').join('');
+  const table='<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;border:1px solid #cbd5e1;"><tr><th align="left" style="padding:8px 9px;background:#14315E;color:#fff;font:800 11px '+HF+';">person</th><th align="right" style="padding:8px 9px;background:#14315E;color:#fff;font:800 11px '+HF+';">F&amp;O export says</th><th align="right" style="padding:8px 9px;background:#14315E;color:#fff;font:800 11px '+HF+';">our email said</th><th align="right" style="padding:8px 9px;background:#14315E;color:#fff;font:800 11px '+HF+';">difference</th></tr>'+rowHtml+'</table>';
+  const verdict=rec.differences===0?'Every person matches':rec.differences+' people do not match.';
+  const lines='<div style="font:400 12px '+HF+';color:#334155;line-height:1.55;margin-top:12px;">'
+    +'<div>'+esc(exportFileLine(items))+'</div>'
+    +'<div>Total people matched: '+rec.matched+'. Total with a difference: '+rec.differences+'.</div>'
+    +'<div>People the export names who have no email address on file: '+esc(rec.noAddress.length?rec.noAddress.join(', '):'none')+'.</div>'
+    +'<div style="font-weight:800;color:'+(rec.differences?'#b91c1c':'#16794a')+';">'+esc(verdict)+'</div></div>';
+  const html='<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PR/PO sender reconciliation</title></head><body style="margin:0;background:#eef1f6;padding:16px;"><table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td align="center"><table role="presentation" width="640" cellpadding="0" cellspacing="0" style="max-width:640px;width:100%;background:#fff;border:1px solid #d8dee8;"><tr><td style="background:#0F2A6B;color:#fff;padding:14px 16px;border-bottom:3px solid #FAC775;font:800 18px '+HF+';">PR / PO sender reconciliation <span style="float:right;font:600 12px '+HF+';color:#FAC775;">'+stamp+'</span></td></tr><tr><td style="padding:14px 16px;">'+freshnessBanner(warning)+'<div style="font:400 12px '+HF+';color:#334155;margin-bottom:10px;">'+esc(provenanceSentence(items))+'</div>'+table+lines+'</td></tr></table></td></tr></table></body></html>';
+  return {subject:'PR / PO sender reconciliation ('+stamp+')',html,count:rec.rows.length,model:rec};
+}
+function buildReconciliationMessage(out){
+  return {subject:guardedSubject('Waqas',out.subject),body:{contentType:'HTML',content:out.html},toRecipients:[{emailAddress:{address:WAQAS_ONLY_RECIPIENT}}]};
+}
+async function sendReconciliation(out, context){
+  const from=process.env.PRPO_MAIL_FROM||process.env.MAIL_FROM;
+  if(!from) throw new Error('MAIL_FROM / PRPO_MAIL_FROM not set');
+  const msg=buildReconciliationMessage(out);
+  const token=await getToken('https://graph.microsoft.com');
+  const r=await fetch('https://graph.microsoft.com/v1.0/users/'+encodeURIComponent(from)+'/sendMail',{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body:JSON.stringify({message:msg,saveToSentItems:true})});
+  if(r.status!==202){ const j=await r.json().catch(()=>({})); throw new Error('reconciliation sendMail '+r.status+' '+JSON.stringify(j.error||j).slice(0,300)); }
+  if(context) context.log('reconciliation message -> '+WAQAS_ONLY_RECIPIENT);
+  return {sent:true,to:WAQAS_ONLY_RECIPIENT,waqasOnly:true};
 }
 async function getToken(scopeBase){ const body=new URLSearchParams({client_id:process.env.CLIENT_ID,client_secret:process.env.CLIENT_SECRET,grant_type:'client_credentials',scope:scopeBase.replace(/\/+$/,'')+'/.default'}); const r=await fetch(`https://login.microsoftonline.com/${process.env.TENANT_ID}/oauth2/v2.0/token`,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body}); const j=await r.json(); if(!r.ok||!j.access_token) throw new Error('token '+r.status+' '+(j.error_description||j.error||'')); return j.access_token; }
 async function sendDivision(out, context){
@@ -564,10 +628,12 @@ async function loadItems(){
   items.freshnessWarning=authority.staleWarning||'';
   items.provenanceSentence=authority.provenanceSentence||'';
   items.exportDateUtc=authority.exportDateUtc||null;
+  items.exportAuthority=authority;
   for(const item of items){
     item.freshnessWarning=items.freshnessWarning;
     item.provenanceSentence=items.provenanceSentence;
     item.exportDateUtc=items.exportDateUtc;
+    item.exportAuthority=authority;
   }
   items.datasetRevision=live.revision;
   items.datasetGeneratedAt=live.generatedAt||null;
@@ -616,7 +682,9 @@ app.timer('prpo-email-daily', { schedule:'0 0 6 * * 1-5', handler:async(timer,co
   const items=await loadItems();
   const hist=await historyItems();
   for(const cfg of DIVS){ if(cfg.send===false) continue; try{ await sendDivision(buildDivision(cfg,items,hist),context); }catch(e){ context.error('prpo '+cfg.key+' FAILED: '+e.message); } }
-  for(const p of groupByOwner(personalPool(items))){ try{ await sendPersonal(buildPersonal(p,hist),context); }catch(e){ context.error('prpo personal '+p.user+' FAILED: '+e.message); } }
+  const emailCounts={};
+  for(const p of groupByOwner(personalPool(items))){ try{ const out=buildPersonal(p,hist); emailCounts[out.user]=out.count; await sendPersonal(out,context); }catch(e){ context.error('prpo personal '+p.user+' FAILED: '+e.message); } }
+  try{ await sendReconciliation(buildReconciliationEmail(items,emailCounts),context); }catch(e){ context.error('prpo reconciliation FAILED: '+e.message); }
 }});
 app.http('prpo-email', { methods:['GET','OPTIONS'], authLevel:'function', route:'prpo-email', handler:async(request,context)=>{
   try{
@@ -625,6 +693,7 @@ app.http('prpo-email', { methods:['GET','OPTIONS'], authLevel:'function', route:
     const items=await loadItems();
     const datasetMeta={datasetRevision:items.datasetRevision,datasetGeneratedAt:items.datasetGeneratedAt,sourceState:items.sourceState};
     const hist=await historyItems();
+    if(url.searchParams.get('reconcile')==='1'){ const out=buildReconciliationEmail(items); if(url.searchParams.get('format')==='html') return {status:200,headers:{'Content-Type':'text/html; charset=utf-8'},body:out.html}; if(wantSend){ const s=await sendReconciliation(out,context); return {status:200,jsonBody:{...datasetMeta,reconciliation:out.model,...s}}; } return {status:200,jsonBody:{...datasetMeta,reconciliation:out.model,deliveryAddress:WAQAS_ONLY_RECIPIENT,sent:false}}; }
     if(dk){ const cfg=DIVS.find(d=>d.key===dk); if(!cfg) return {status:400,jsonBody:{error:'unknown division; use procurement|invoicing|ops_hm|ops_all'}};
       const out=buildDivision(cfg,items,hist);
       if(url.searchParams.get('format')==='html') return {status:200,headers:{'Content-Type':'text/html; charset=utf-8'},body:out.html};
@@ -644,9 +713,11 @@ app.http('prpo-email', { methods:['GET','OPTIONS'], authLevel:'function', route:
       return {status:200,jsonBody:{...datasetMeta,waqasOnly:true,sent:wantSend,people}};
     }
     const summary=[]; for(const cfg of DIVS){ if(cfg.send===false) continue; const out=buildDivision(cfg,items,hist); let s={sent:false}; if(sendAll) s=await sendDivision(out,context); summary.push({division:cfg.key,count:out.count,value:Math.round(out.value),...s}); }
-    const people=[]; for(const p of groupByOwner(personalPool(items))){ const out=buildPersonal(p,hist); let s={sent:false}; if(sendAll) s=await sendPersonal(out,context); people.push({user:p.user,count:out.count,value:Math.round(out.value),...s}); }
-    return {status:200,jsonBody:{...datasetMeta,sentAll:sendAll,waqasOnly:true,divisions:summary,people}};
+    const people=[], emailCounts={}; for(const p of groupByOwner(personalPool(items))){ const out=buildPersonal(p,hist); emailCounts[out.user]=out.count; let s={sent:false}; if(sendAll) s=await sendPersonal(out,context); people.push({user:p.user,count:out.count,value:Math.round(out.value),...s}); }
+    let reconciliation=buildReconciliationEmail(items,emailCounts), reconciliationSend={sent:false};
+    if(sendAll)reconciliationSend=await sendReconciliation(reconciliation,context);
+    return {status:200,jsonBody:{...datasetMeta,sentAll:sendAll,waqasOnly:true,divisions:summary,people,reconciliation:{...reconciliationSend,rows:reconciliation.model.rows,matched:reconciliation.model.matched,differences:reconciliation.model.differences,noAddress:reconciliation.model.noAddress}}};
   }catch(e){ context.error('prpo-email failed:',e); return {status:500,jsonBody:{error:e.message}}; }
 }});
 
-module.exports = { buildItems, buildDivision, buildXlsxBase64, parseXlsx, DIVS, personalPool, groupByOwner, buildPersonal, historyItems, loadItems, applyDeliveryPolicy, freshnessWarning, fnoOwnerNames, buildPersonalMessage, buildDivisionMessage, WAQAS_ONLY_RECIPIENT };
+module.exports = { buildItems, buildDivision, buildXlsxBase64, parseXlsx, DIVS, personalPool, personalAttributionPool, groupByOwner, buildPersonal, historyItems, loadItems, applyDeliveryPolicy, freshnessWarning, fnoOwnerNames, buildPersonalMessage, buildDivisionMessage, buildReconciliationEmail, buildReconciliationMessage, reconciliationModel, addressForOwner, WAQAS_ONLY_RECIPIENT, PRPO_PERSONAL_DELIVERY_MODE };
