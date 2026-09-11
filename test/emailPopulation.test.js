@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const XLSX = require('xlsx');
 const workRule = require('../work-class-rule.json');
-const { buildItems, buildDivision, buildXlsxBase64, groupByOwner, personalPool, buildPersonal, DIVS, parseXlsx, applyDeliveryPolicy, freshnessWarning, fnoOwnerNames, buildPersonalMessage, buildDivisionMessage, buildReconciliationEmail, buildReconciliationMessage, reconciliationModel, addressForOwner, WAQAS_ONLY_RECIPIENT, PRPO_PERSONAL_DELIVERY_MODE } = require('../src/functions/prpoEmail');
+const { buildItems, buildDivision, buildXlsxBase64, groupByOwner, personalPool, buildPersonal, DIVS, parseXlsx, applyDeliveryPolicy, freshnessWarning, fnoOwnerNames, buildPersonalMessage, buildDivisionMessage, buildReconciliationEmail, buildReconciliationMessage, reconciliationModel, countOwnersFromExportWorkbooks, effectiveDeliveryOptions, addressForOwner, WAQAS_ONLY_RECIPIENT, PRPO_PERSONAL_DELIVERY_MODE } = require('../src/functions/prpoEmail');
 
 function pr(status, number) {
   return {
@@ -216,7 +216,7 @@ test('every personal and team message is hard-guarded to Waqas only', async () =
   const personal = buildPersonal(groupByOwner(personalPool(buildItems([{ ...pr('In review', 'PR-GUARD'), 'Pending Approver/User': 'Adnan.Ullah' }], [])))[0], {});
   const messages = [await buildPersonalMessage(personal)];
   for (const cfg of DIVS) messages.push(buildDivisionMessage({ cfg, subject: 'Team list', html: '<p>Preview</p>' }, 'test-attachment'));
-  messages.push(buildReconciliationMessage(buildReconciliationEmail(applyDeliveryPolicy(buildItems([{ ...pr('In review', 'PR-REC'), 'Pending Approver/User': 'Adnan.Ullah' }], [])))));
+  messages.push(buildReconciliationMessage(buildReconciliationEmail({ authority: { prFile: 'Purchase Reques.xlsx', poFile: 'Purchase order.xlsx', exportDateUtc: '2026-09-11T05:19:00Z' }, counts: { 'Adnan.Ullah': 1 } }, { 'Adnan.Ullah': 1 })));
   for (const message of messages) {
     assert.deepEqual(message.toRecipients, [{ emailAddress: { address: WAQAS_ONLY_RECIPIENT } }]);
     assert.equal(Object.hasOwn(message, 'ccRecipients'), false);
@@ -248,22 +248,60 @@ test('direct delivery switch reports a person with no address and keeps their it
 });
 
 test('reconciliation table arithmetic compares export owners to email counts', () => {
-  const items = applyDeliveryPolicy(buildItems([
-    { ...pr('In review', 'PR-ADNAN-1'), 'Pending Approver/User': 'Adnan.Ullah' },
-    { ...pr('In review', 'PR-ADNAN-2'), 'Pending Approver/User': 'Adnan.Ullah' },
-    { ...pr('In review', 'PR-RODERICK'), 'Pending Approver/User': 'roderick.red' },
-    { ...pr('In review', 'PR-SIRINIKHIL'), 'Pending Approver/User': 'Sirinikhil' }
-  ], []));
-  items.exportDateUtc = '2026-09-07T08:00:00Z';
-  items.exportAuthority = { prFile: 'Purchase Reques.xlsx', poFile: 'Purchase order.xlsx' };
-  items.provenanceSentence = 'These figures come from the Dynamics 365 F&O export supplied by IT, dated 7 September 2026.';
-  const model = reconciliationModel(items, { 'Adnan.Ullah': 2, 'roderick.red': 0, 'Sirinikhil': 1 });
+  const source = {
+    authority: { prFile: 'Purchase Reques.xlsx', poFile: 'Purchase order.xlsx', exportDateUtc: '2026-09-07T08:00:00Z', provenanceSentence: 'These figures come from the Dynamics 365 F&O export supplied by IT, dated 7 September 2026.' },
+    counts: { 'Adnan.Ullah': 2, 'roderick.red': 1, 'Sirinikhil': 1 }
+  };
+  const model = reconciliationModel(source.counts, { 'Adnan.Ullah': 2, 'roderick.red': 0, 'Sirinikhil': 1 });
   assert.deepEqual(model.rows.find(row => row.person === 'Adnan.Ullah'), { person: 'Adnan.Ullah', exportCount: 2, emailCount: 2, difference: 0 });
   assert.deepEqual(model.rows.find(row => row.person === 'roderick.red'), { person: 'roderick.red', exportCount: 1, emailCount: 0, difference: -1 });
   assert.deepEqual(model.noAddress, ['Sirinikhil']);
-  const email = buildReconciliationEmail(items, { 'Adnan.Ullah': 2, 'roderick.red': 0, 'Sirinikhil': 1 });
+  const email = buildReconciliationEmail(source, { 'Adnan.Ullah': 2, 'roderick.red': 0, 'Sirinikhil': 1 });
   assert.match(email.html, /Purchase Reques\.xlsx and Purchase order\.xlsx, dated 7 September 2026/);
   assert.match(email.html, /1 people do not match\./);
+});
+
+test('reconciliation export column is counted directly from workbook rows and can go red', () => {
+  const exportCounts = countOwnersFromExportWorkbooks({
+    prRows: [
+      { 'Status': 'In review', 'Pending Approver/User': 'Adnan.Ullah' },
+      { 'Status': 'Approved', 'Pending Approver/User': 'Adnan.Ullah' },
+      { 'Status': 'Draft', 'Pending Approver/User': 'roderick.red' },
+      { 'Status': 'Closed', 'Pending Approver/User': 'Aparna.Pauly' }
+    ],
+    poRows: [
+      { 'Approval status': 'In review', 'Purchase order status': 'Open order', 'Step name': 'Accounting Manager', 'Pending Approver/User': 'arman.b' },
+      { 'Approval status': 'Confirmed', 'Purchase order status': 'Open order', 'Step name': 'LPO sent/shared with supplier', 'Pending Approver/User': 'Riyaz.n' }
+    ]
+  });
+  assert.deepEqual(exportCounts, { 'Adnan.Ullah': 2, 'roderick.red': 1, 'arman.b': 1 });
+  const model = reconciliationModel(exportCounts, { 'Adnan.Ullah': 1, 'roderick.red': 1, 'arman.b': 1 });
+  assert.deepEqual(model.rows.find(row => row.person === 'Adnan.Ullah'), { person: 'Adnan.Ullah', exportCount: 2, emailCount: 1, difference: -1 });
+  assert.equal(model.differences, 1);
+});
+
+test('direct delivery is held when the export is stale', async () => {
+  const source = { authority: { stale: true }, counts: { 'Adnan.Ullah': 1 } };
+  const model = reconciliationModel(source.counts, { 'Adnan.Ullah': 1 });
+  const options = effectiveDeliveryOptions({ deliveryMode: 'direct_to_owner' }, source, model);
+  assert.equal(options.deliveryMode, 'waqas_only');
+  assert.match(options.cutoverHoldReason, /older than this morning/);
+  const personal = buildPersonal(groupByOwner(personalPool(buildItems([{ ...pr('In review', 'PR-STALE-DIRECT'), 'Pending Approver/User': 'Adnan.Ullah' }], [])))[0], {});
+  const message = await buildPersonalMessage(personal, options);
+  assert.deepEqual(message.toRecipients, [{ emailAddress: { address: WAQAS_ONLY_RECIPIENT } }]);
+});
+
+test('direct delivery is held when reconciliation has a non-zero difference', async () => {
+  const source = { authority: { stale: false }, counts: { 'Adnan.Ullah': 2 } };
+  const model = reconciliationModel(source.counts, { 'Adnan.Ullah': 1 });
+  const options = effectiveDeliveryOptions({ deliveryMode: 'direct_to_owner' }, source, model);
+  assert.equal(options.deliveryMode, 'waqas_only');
+  assert.match(options.cutoverHoldReason, /non-zero difference/);
+  const email = buildReconciliationEmail(source, { 'Adnan.Ullah': 1 }, options);
+  assert.match(email.html, /Direct-to-owner delivery was held/);
+  const personal = buildPersonal(groupByOwner(personalPool(buildItems([{ ...pr('In review', 'PR-DIFF-DIRECT'), 'Pending Approver/User': 'Adnan.Ullah' }], [])))[0], {});
+  const message = await buildPersonalMessage(personal, options);
+  assert.deepEqual(message.toRecipients, [{ emailAddress: { address: WAQAS_ONLY_RECIPIENT } }]);
 });
 
 test('stale warning appears after six hours and stays absent when fresh', () => {

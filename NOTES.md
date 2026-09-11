@@ -188,3 +188,14 @@ The comparison covers 954 actionable PR documents. Every named-owner difference 
   - `Shaik.baba | 1 | 1 | 0`
 - The reconciliation verdict was `Every person matches`. The export source/date line was rendered from the current export authority carried by the live dataset.
 - Chandan Kumar's sender, flow, OneDrive, tokens, template, recipients, and schedule were untouched. The only production app setting changed was `PRPO_MAIL_FROM`.
+
+# 11 September 2026 reconciliation correction 01
+
+- Correction accepted: the first reconciliation compared digest-built `items` against digest-built `personalPool` counts, so it could not prove the email counts independently.
+- Code changed so the reconciliation export column is now built by `countOwnersFromExportWorkbooks()` in `src/functions/prpoEmail.js`. That function counts directly from workbook rows supplied by `readExportReconciliationSource()`, which opens the current `Purchase Reques*.xlsx` and `Purchase order*.xlsx` files through `loadExportAuthority()` in `src/shared/prpoDataset.js`.
+- The reconciliation no longer uses `items`, `personalPool`, `groupByOwner`, or `personalAttributionPool` to build the `F&O export says` column. The `our email said` column still comes from the digest count that was actually built for each person.
+- Added direct-cutover guard: if `PRPO_PERSONAL_DELIVERY_MODE` is later changed to `direct_to_owner`, stale export data or any non-zero reconciliation difference forces that run back to Waqas-only delivery and puts the hold reason at the top of the reconciliation email. The mode remains `waqas_only`.
+- Live folder checked with Graph against the exact configured source `w.amjad@striveservicesgroup.com` / `Claude/PR PO Pipeline Dashboard/Email-Drops`. The folder contains only `Purchase order.xlsx` modified `2026-09-07T11:34:19Z` and `Purchase Reques.xlsx` modified `2026-09-07T11:34:18Z`.
+- Plain cause of stale export: the Function is correctly reading the newest pair available in the OneDrive folder it can access, but Abdul's newer 10 and 11 September exports are not in that folder. No mailbox, Chandan flow, OneDrive configuration, token, permission, app setting, or timer was changed to work around that.
+- Tests run after the fix: `npm test`. Result: 36 passed, 0 failed. New tests prove the reconciliation can go red when a digest count is deliberately wrong, direct delivery is held on stale export, and direct delivery is held on a non-zero reconciliation difference.
+- Protected items: Chandan Kumar's sender, flow, OneDrive, tokens, template, recipients, and schedule were untouched. No secret, token, permission, timer, recipient setting, or app setting was changed.

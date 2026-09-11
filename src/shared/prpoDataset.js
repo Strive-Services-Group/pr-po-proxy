@@ -636,6 +636,7 @@ module.exports = {
   readObservation,
   upsertObservation,
   openPO,
+  loadExportAuthority,
   exportAuthorityText,
   workbookRows,
   refreshWithFallback
