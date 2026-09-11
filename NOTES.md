@@ -131,3 +131,60 @@ The comparison covers 954 actionable PR documents. Every named-owner difference 
 - Build check note: `node -c index.html` is not a valid production-build check for this HTML dashboard and failed with Node's unknown `.html` extension error. It is not counted as a dashboard failure; the repository has no `package.json` build command.
 - Local no-send reconciliation render attempted with `node -e` against `email.loadItems()`. It was stopped after the live dataset fetch took too long locally. A direct read of the production `/api/dataset` returned HTTP 200, so final preview/send verification will use the deployed Function endpoint.
 - Chandan Kumar's sender, flow, OneDrive, tokens, template, recipients, and schedule were not opened or changed.
+
+## Final production proof for sender activation
+
+- First deploy run for code commit `76deaeb4c3a592a24e638b0d99bdc2366c9e596f`: GitHub Actions run `34571327086` passed tests, Azure deployment, and `/api/version` proof.
+- Final code deploy run for commit `4a4baa54c30fabcf3b600fa650aadddc3a3e5d07`: GitHub Actions run `34571529162` passed tests, Azure deployment, and `/api/version` proof.
+- Independent `/api/version` read returned `4a4baa54c30fabcf3b600fa650aadddc3a3e5d07`.
+- Live no-send reconciliation preview through `/api/prpo-email?reconcile=1` returned 21 matched people, 0 differences, and these no-address names: `admin.hk`, `D365CRMADMIN`, `Layusha.cleatus`, `Nathan.Buys`, `Patrick.Smith`, `Qasim.Jahangir`, `ruben.senesan`, `Shaik.baba`.
+- Real production send through `/api/prpo-email?send=1` completed at about `2026-09-11T06:53:22Z`. It sent 24 messages total: 2 active team lists, 21 personal digests, and 1 reconciliation email. Every returned `to` value was `w.amjad@striveservicesgroup.com`; no send result contained a Cc or Bcc field.
+- Sent subjects:
+  - `[FOR procurement team] PR / PO Pipeline — Suppliers, Open Orders & Unowned PRs (11 Sept 2026)`
+  - `[FOR invoicing team] PR / PO Pipeline — Pending Invoicing (11 Sept 2026)`
+  - `[FOR Adnan.Ullah] Action needed — 246 PR/PO items pending with you (11 Sept 2026)`
+  - `[FOR roderick.red] Action needed — 183 PR/PO items pending with you (11 Sept 2026)`
+  - `[FOR Aparna.Pauly] Action needed — 96 PR/PO items pending with you (11 Sept 2026)`
+  - `[FOR Layusha.cleatus] Action needed — 31 PR/PO items pending with you (11 Sept 2026)`
+  - `[FOR arman.b] Action needed — 31 PR/PO items pending with you (11 Sept 2026)`
+  - `[FOR Riyaz.n] Action needed — 29 PR/PO items pending with you (11 Sept 2026)`
+  - `[FOR Mohamed.Ashraf] Action needed — 6 PR/PO items pending with you (11 Sept 2026)`
+  - `[FOR dinesh.laxman] Action needed — 5 PR/PO items pending with you (11 Sept 2026)`
+  - `[FOR D365CRMADMIN] Action needed — 4 PR/PO items pending with you (11 Sept 2026)`
+  - `[FOR Gokul.Krishna] Action needed — 4 PR/PO items pending with you (11 Sept 2026)`
+  - `[FOR Ayman.ismail] Action needed — 3 PR/PO items pending with you (11 Sept 2026)`
+  - `[FOR Mohammad.w] Action needed — 2 PR/PO items pending with you (11 Sept 2026)`
+  - `[FOR it.solutions] Action needed — 1 PR/PO item pending with you (11 Sept 2026)`
+  - `[FOR Shaik.baba] Action needed — 1 PR/PO item pending with you (11 Sept 2026)`
+  - `[FOR admin.hk] Action needed — 1 PR/PO item pending with you (11 Sept 2026)`
+  - `[FOR Nathan.Buys] Action needed — 1 PR/PO item pending with you (11 Sept 2026)`
+  - `[FOR Abdul.Muqeet] Action needed — 1 PR/PO item pending with you (11 Sept 2026)`
+  - `[FOR Judhin.prabhakar] Action needed — 1 PR/PO item pending with you (11 Sept 2026)`
+  - `[FOR Qasim.Jahangir] Action needed — 1 PR/PO item pending with you (11 Sept 2026)`
+  - `[FOR ruben.senesan] Action needed — 1 PR/PO item pending with you (11 Sept 2026)`
+  - `[FOR Patrick.Smith] Action needed — 1 PR/PO item pending with you (11 Sept 2026)`
+  - `[FOR Waqas] PR / PO sender reconciliation (11 Sept 2026)`
+- Rendered reconciliation table:
+  - `Adnan.Ullah | 246 | 246 | 0`
+  - `roderick.red | 183 | 183 | 0`
+  - `Aparna.Pauly | 96 | 96 | 0`
+  - `arman.b | 31 | 31 | 0`
+  - `Layusha.cleatus | 31 | 31 | 0`
+  - `Riyaz.n | 29 | 29 | 0`
+  - `Mohamed.Ashraf | 6 | 6 | 0`
+  - `dinesh.laxman | 5 | 5 | 0`
+  - `D365CRMADMIN | 4 | 4 | 0`
+  - `Gokul.Krishna | 4 | 4 | 0`
+  - `Ayman.ismail | 3 | 3 | 0`
+  - `Mohammad.w | 2 | 2 | 0`
+  - `Abdul.Muqeet | 1 | 1 | 0`
+  - `admin.hk | 1 | 1 | 0`
+  - `it.solutions | 1 | 1 | 0`
+  - `Judhin.prabhakar | 1 | 1 | 0`
+  - `Nathan.Buys | 1 | 1 | 0`
+  - `Patrick.Smith | 1 | 1 | 0`
+  - `Qasim.Jahangir | 1 | 1 | 0`
+  - `ruben.senesan | 1 | 1 | 0`
+  - `Shaik.baba | 1 | 1 | 0`
+- The reconciliation verdict was `Every person matches`. The export source/date line was rendered from the current export authority carried by the live dataset.
+- Chandan Kumar's sender, flow, OneDrive, tokens, template, recipients, and schedule were untouched. The only production app setting changed was `PRPO_MAIL_FROM`.
