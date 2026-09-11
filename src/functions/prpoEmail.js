@@ -526,7 +526,7 @@ async function sendPersonal(out, context, options){
   if(r.status!==202){ const j=await r.json().catch(()=>({})); throw new Error('personal sendMail '+r.status+' '+JSON.stringify(j.error||j).slice(0,300)); }
   const to=msg.toRecipients[0].emailAddress.address;
   if(context) context.log('personal message for '+out.user+' -> '+to);
-  return {user:out.user,sent:true,to,waqasOnly:to.toLowerCase()===WAQAS_ONLY_RECIPIENT};
+  return {user:out.user,sent:true,to,subject:msg.subject,waqasOnly:to.toLowerCase()===WAQAS_ONLY_RECIPIENT};
 }
 
 /* ---- auth + send ---- */
@@ -587,7 +587,7 @@ async function sendReconciliation(out, context){
   const r=await fetch('https://graph.microsoft.com/v1.0/users/'+encodeURIComponent(from)+'/sendMail',{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body:JSON.stringify({message:msg,saveToSentItems:true})});
   if(r.status!==202){ const j=await r.json().catch(()=>({})); throw new Error('reconciliation sendMail '+r.status+' '+JSON.stringify(j.error||j).slice(0,300)); }
   if(context) context.log('reconciliation message -> '+WAQAS_ONLY_RECIPIENT);
-  return {sent:true,to:WAQAS_ONLY_RECIPIENT,waqasOnly:true};
+  return {sent:true,to:WAQAS_ONLY_RECIPIENT,subject:msg.subject,waqasOnly:true};
 }
 async function getToken(scopeBase){ const body=new URLSearchParams({client_id:process.env.CLIENT_ID,client_secret:process.env.CLIENT_SECRET,grant_type:'client_credentials',scope:scopeBase.replace(/\/+$/,'')+'/.default'}); const r=await fetch(`https://login.microsoftonline.com/${process.env.TENANT_ID}/oauth2/v2.0/token`,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body}); const j=await r.json(); if(!r.ok||!j.access_token) throw new Error('token '+r.status+' '+(j.error_description||j.error||'')); return j.access_token; }
 async function sendDivision(out, context){
@@ -600,7 +600,7 @@ async function sendDivision(out, context){
     body:JSON.stringify({message:msg,saveToSentItems:true})});
   if(r.status!==202){ const j=await r.json().catch(()=>({})); throw new Error('sendMail '+r.status+' '+JSON.stringify(j.error||j).slice(0,300)); }
   if(context) context.log('division test-channel message for '+out.cfg.key+' -> '+WAQAS_ONLY_RECIPIENT);
-  return {sent:true,to:WAQAS_ONLY_RECIPIENT,waqasOnly:true};
+  return {sent:true,to:WAQAS_ONLY_RECIPIENT,subject:msg.subject,waqasOnly:true};
 }
 
 async function fetchXlsx(url){ const r=await fetch(url+(url.includes('?')?'&':'?')+'t='+Date.now()); if(!r.ok) throw new Error('fetch '+r.status+' '+url); return parseXlsx(Buffer.from(await r.arrayBuffer())); }
